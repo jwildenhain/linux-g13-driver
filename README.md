@@ -1,91 +1,120 @@
-# Readme File
+# Linux G13 Driver
 
-This code was forked from Jim Gupta's code at <https://code.google.com/p/linux-g13-driver/>
-
-I've forked this code because Google Code is deprecated and I don't want it lost.  Since then, I've started playing with it a little bit (Mostly directory structure and semantic changes for use with git).
-
-I haven't changed the fundamental code because I'm by no means a coder, but we'll see what happens from here.  I'll eventually write a .service file for systemd and perhaps package it for the AUR.  The service file should work with Ubuntu 15.04 and above.
+This repository is a maintained fork of the original G13 Linux driver with an updated structure for Git and a small set of practical improvements, including live LCD system stats on supported firmware.
 
 ## Notes
 
-I've tried this on 64-bit Arch Linux and it works so far.  I haven't tried it in 64-bit Ubuntu but it should work there, too.
+- Originally based on the Google Code project layout.
+- The driver runs as a userspace process and sends input events via `uinput`.
+- LCD-capable builds write live status to the G13 display: CPU, memory, GPU, network and disk usage.
+- The top 4 buttons under the LCD select the active bindings set.
+- The joystick is currently mapped as directional keys in this branch.
 
-I'm having a hard time getting udev rules to work so this can run in user mode.  It seems that `/dev/uinput` is in the kernel and loads before anything is writable and the file's permissions don't get modified.
+## Ubuntu 22.04 (and Ubuntu-like) setup
 
-## Requirements
+### Requirements
 
-### libusb-1.0
+- `libusb-1.0` development package
+- `ant` (for GUI jar build)
+- Java runtime/JDK (JDK 8+; on Ubuntu 22.04 `default-jdk`/`default-jre` is fine)
 
-For Ubuntu, it should be installed already but if you don't have it, you can get it by typing:
+Install dependencies:
 
-    sudo apt-get install libusb-1.0-0
-
-For Arch Linux you can install it by typing:
-
-    sudo pacman -S libusb
-
-### Java version 1.6 or higher
-
-For Ubuntu, it can be installed by typing:
-
-    sudo apt-get install default-jre
-
-For Arch it can be installed by typing:
-
-    sudo pacman -S jre8-openjdk
-
-## Download
-
-Download zip file from <https://github.com/Tetz95/linux-g13-driver/releases/latest>  
-Unzip into your favorite directory
+```bash
+sudo apt update
+sudo apt install -y git build-essential ant default-jdk default-jre libusb-1.0-0-dev
+```
 
 ## Build
 
-Open a console (command prompt)  
-Go to the directory where you unzipped your download  
-type `make`
+### 1) Build the C++ driver (required)
 
-## Running Application
+From the repository root:
 
-Run the config tool first!  
-In a command prompt go to the directory where you unzipped your download and type:
+```bash
+./build_driver.sh --force
+```
 
-    java -jar Linux-G13-GUI.jar
+This builds `src/Linux-G13-Driver`.
 
-This will bring up the UI and create the initial files needed for your driver.  
-All config files are saved in `$(HOME)/.g13`
+### 2) Build the Java GUI (optional, for editing bindings/macros)
 
-Run the driver  
-In a command prompt go to the directory where you unzipped your download and type:
+From the repository root:
 
-    sudo -E ./G13-Linux-Driver
+```bash
+cd src
+ant
+```
 
-The `-E` is to run it using your environment variables so it doesn't look for the `.g13` directory in `/root`  
-If you want to run the command and then detach it so you can close the terminal:
+The GUI jar is produced in the deploy folder, for example:
 
-    sudo -E ./G13-Linux-Driver &
+- `deploy/Linux-G13_v1.0-r<revision>/Linux-G13-GUI.jar`
 
-If you are configuring the application while the driver is running, the driver will not pick up changes unless you select a different bindings set or you can restart the driver.
+## Running
 
-The top 4 buttons under the LCD screen select the bindings.
+### 1) Generate/update config (`.properties`) files
 
-The joystick currently only supports key mappings.
+Run the config tool:
 
-## LCD system stats display
+```bash
+java -jar deploy/Linux-G13_v1.0-r<revision>/Linux-G13-GUI.jar
+```
 
-The driver now sends live usage info to the LCD every second.
+The GUI creates and saves the config files on first run at:
 
-Displayed lines are:
+- `~/.g13/bindings-0.properties` ... `~/.g13/bindings-3.properties`
+- `~/.g13/macro-0.properties` and additional macro files as needed
 
-- `CPU` - total CPU utilization percentage
-- `MEM` - memory usage percentage
-- `GPU` - GPU utilization percentage when available (`GPU n/a` when not)
-- `NET` - total network throughput in bytes/sec (RX+TX)
-- `DSK` - root filesystem usage percentage
+You can also create them manually. Required format is Java properties text:
 
-Notes:
+```properties
+# ~/.g13/bindings-0.properties
+color=255,255,255
+G1=p,k.3
+G2=p,k.4
+...
+G22=m,0,1
+```
 
-- The LCD buffer is 160x43 monochrome pixels and uses a tiny built-in 5x7 font.
-- Network value is computed from `/proc/net/dev` delta between updates.
-- GPU value reads from `/sys/class/drm/card*/device/gpu_busy_percent` when present.
+- `p,k.<linux_keycode>` = pass-through keycode
+- `m,<macro_id>,<repeat_count>` = macro sequence playback
 
+`macro-*.properties` examples use:
+
+```properties
+name=ALT-TAB
+sequence=kd.56,kd.15,d.20,ku.15,ku.56
+id=0
+```
+
+### 2) Start driver
+
+From repository root:
+
+```bash
+cd src
+sudo -E ./Linux-G13-Driver
+```
+
+`-E` preserves your environment so the driver reads `~/.g13` for your user.
+To detach:
+
+```bash
+sudo -E ./Linux-G13-Driver &
+```
+
+### 3) Config changes while running
+
+The driver reloads only on top-row bindings change keys (when supported by your build flow). For reliable results after edits, restart the driver.
+
+## Linux-G13-Driver display output
+
+The driver renders five lines and refreshes approximately every second:
+
+- `CPU xx%`
+- `MEM xx%`
+- `GPU xx%` (or `GPU n/a`)
+- `NET xx` (throughput in B/s / KB/s / MB/s)
+- `DSK xx%`
+
+If no source is available for a field, it shows `n/a`.

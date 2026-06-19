@@ -1,41 +1,80 @@
 README
 
 Notes:
-I've only tried this on Ubuntu 11.04 64 bit version.  No promises that it will work
-on your version even if it's the same.
-
+- This fork provides a practical Linux G13 setup with bindings/macros in `~/.g13` and a C++ driver.
+- The top 4 buttons below the LCD select the active bindings page.
+- The joystick is mapped as directional keys in this branch.
 
 Requirements:
-libusb-1.0
-if you don't have it, you can get it by "sudo apt-get install libusb-1.0"
-
-Java version 1.6 or higher
+- libusb-1.0-0-dev
+- ant and JDK 8+ (Java 1.6+ compatibility target in project)
 
 Download:
-Download zip file from https://github.com/Tetz95/linux-g13-driver/releases/latest
-Unzip into your favorite directory
+- Clone or unpack the project sources from the repository/release.
 
-Build:
-Open a console (command prompt)
-Go to the directory where you unzipped your download
-type "make"
+Build (Ubuntu 22.04):
 
+1) Install deps:
+
+```
+sudo apt update
+sudo apt install -y git build-essential ant default-jdk default-jre libusb-1.0-0-dev
+```
+
+2) Build driver:
+
+```bash
+./build_driver.sh --force
+```
+
+3) Build GUI (optional):
+
+```bash
+cd src
+ant
+```
 
 Running Application:
-Run the config tool first!
-	In a command prompt go to the directory where you unzipped your download
-	and type "java -jar Linux-G13-GUI.jar"
-	This will bring up the UI and create the initial files needed for your driver.
-	All config files are saved in $(HOME)/.g13
 
-Run the driver
-	In a command prompt go to the directory where you unzipped your download
-	and type "sudo ./Linux-G13-Driver"
+1) Create configs by running the GUI once (it creates `~/.g13/bindings-*.properties` and `~/.g13/macro-*.properties`):
 
-If you are configuring the application while the driver is running, the driver will
-not pick up changes unless you select a different bindings set or you can restart
-the driver.
+```bash
+java -jar deploy/Linux-G13_v1.0-r<revision>/Linux-G13-GUI.jar
+```
 
-The top 4 buttons under the LCD screen select the bindings.
+2) Start driver:
 
-The joystick currently only supports key mappings.
+```bash
+cd src
+sudo -E ./Linux-G13-Driver
+```
+
+3) To detach:
+
+```bash
+sudo -E ./Linux-G13-Driver &
+```
+
+If configuration is edited while running, restart the driver for guaranteed reload.
+
+Config file format (generated or manual):
+
+`~/.g13/bindings-0.properties`
+
+```properties
+color=255,255,255
+G1=p,k.3
+G2=p,k.4
+G21=m,0,1
+```
+
+`~/.g13/macro-0.properties`
+
+```properties
+name=ALT-TAB
+sequence=kd.56,kd.15,d.20,ku.15,ku.56
+id=0
+```
+
+Display update:
+- The driver now writes CPU, MEM, GPU, NET, and DSK lines to the LCD every second.
