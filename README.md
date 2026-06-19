@@ -70,3 +70,22 @@ If you are configuring the application while the driver is running, the driver w
 The top 4 buttons under the LCD screen select the bindings.
 
 The joystick currently only supports key mappings.
+
+## LCD system stats display
+
+The driver now sends live usage info to the LCD every second.
+
+Displayed lines are:
+
+- `CPU` - total CPU utilization percentage
+- `MEM` - memory usage percentage
+- `GPU` - GPU utilization percentage when available (`GPU n/a` when not)
+- `NET` - total network throughput in bytes/sec (RX+TX)
+- `DSK` - root filesystem usage percentage
+
+Notes:
+
+- The LCD buffer is 160x43 monochrome pixels and uses a tiny built-in 5x7 font.
+- Network value is computed from `/proc/net/dev` delta between updates.
+- GPU value reads from `/sys/class/drm/card*/device/gpu_busy_percent` when present.
+
