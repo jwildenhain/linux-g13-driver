@@ -18,6 +18,8 @@ using namespace std;
 vector<G13 *> g13s;
 pthread_t *pthreads;
 
+volatile sig_atomic_t g13_keep_running = 1;
+
 void discover() {
 	libusb_context *ctx = null;
 	libusb_device **devs;
@@ -80,15 +82,9 @@ void start() {
 }
 
 void shutdown(int signal) {
-
-	for (int i = 0; i < sizeof(pthreads); i++) {
-		pthread_kill(pthreads[i], 0);
-	}
-
-	for (unsigned int i = 0; i < g13s.size(); i++) {
-		delete g13s[i];
-	}
-
+	// Async-signal-safe: just drop the run flag. The worker loops poll it and
+	// return, main() joins them, and cleanup() releases the devices.
+	g13_keep_running = 0;
 }
 
 void cleanup() {
@@ -102,6 +98,7 @@ int main(int argc, char *argv[]) {
 	create_uinput();
 
 	signal(SIGINT, shutdown);
+	signal(SIGTERM, shutdown);
 
 	discover();
 
@@ -109,7 +106,7 @@ int main(int argc, char *argv[]) {
 
 	start();
 
-	//cleanup();
+	cleanup();
 
 	return 0;
 }

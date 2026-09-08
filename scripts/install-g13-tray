@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+/usr/bin/python3 -c 'import gi; gi.require_version("Gtk", "3.0"); gi.require_version("AyatanaAppIndicator3", "0.1")' || {
+  echo 'Install dependencies: sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1' >&2
+  exit 1
+}
+install -d "$HOME/.local/share/g13-tray" "$HOME/.local/share/applications" "$HOME/.config/autostart"
+install -m 644 "$root"/app/g13_*.py "$HOME/.local/share/g13-tray/"
+/usr/bin/python3 - <<'PY'
+from pathlib import Path
+home = Path.home()
+script = str(home / '.local/share/g13-tray/g13_tray.py')
+# Desktop Entry quoted arguments require special escaping, including %.
+script = script.replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$').replace('%', '%%')
+base = '[Desktop Entry]\nType=Application\nName=G13 Control\nComment=Configure Logitech G13 profiles and displays\nIcon=input-gaming\nTerminal=false\n'
+command = '/usr/bin/python3 "' + script + '"'
+(home / '.local/share/applications/g13-control.desktop').write_text(base + 'Exec=' + command + '\nCategories=Settings;HardwareSettings;\n')
+(home / '.config/autostart/g13-control.desktop').write_text(base + 'Exec=' + command + ' --background\nX-GNOME-Autostart-enabled=true\n')
+PY
+printf 'Installed G13 Control and enabled login autostart.\n'

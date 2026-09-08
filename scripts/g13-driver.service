@@ -1,0 +1,25 @@
+[Unit]
+Description=Linux G13 driver (userspace key and LCD daemon)
+Documentation=file:%h/.config/g13/g13-driver.env
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Optional. Holds G13_DRIVER_BIN plus any env the LCD page commands need.
+EnvironmentFile=-%h/.config/g13/g13-driver.env
+ExecStart=%h/.local/bin/g13ctl run
+Restart=always
+RestartSec=5
+# The driver polls for a clean exit once per read timeout (~1s).
+TimeoutStopSec=15
+KillSignal=SIGTERM
+KillMode=control-group
+NoNewPrivileges=yes
+# NOTE: do not add PrivateTmp - the LCD FIFO lives at /tmp/g13_lcd_fifo and is
+# shared with the separate lcd-fifo-writer service.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=g13-driver
+
+[Install]
+WantedBy=default.target

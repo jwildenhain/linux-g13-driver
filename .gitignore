@@ -1,0 +1,20 @@
+# Build outputs and locally downloaded dependencies
+*.o
+*.pyc
+__pycache__/
+/src/Linux-G13-Driver
+/deploy/
+/usr/
+*.deb
+*.bak
+# Local generated keymap collection (third-party maps and personal assignments)
+/data/
+# Scratch artifacts
+/src/testwritecheck
+/test_tmp_repo.txt
+/page_command_updates.patch
+/page_patch.diff
+# Credentials must remain outside the repository
+.env
+.env.*
+!.env.example

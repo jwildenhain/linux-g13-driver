@@ -1,0 +1,535 @@
+#!/usr/bin/env bash
+#
+# g13ctl - start/stop/status control for the Linux G13 driver.
+#
+# The driver runs as a systemd *user* service: its config lives in ~/.g13, its
+# LCD page commands run as you, and udev's uaccess tag gives your session the
+# device without root. See `g13ctl help`.
+
+set -euo pipefail
+
+readonly UNIT="g13-driver.service"
+readonly G13_VENDOR="046d"
+readonly G13_PRODUCT="c21c"
+readonly UDEV_RULE="91-g13.rules"
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/g13"
+readonly ENV_FILE="$CONFIG_DIR/g13-driver.env"
+readonly SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+readonly LOCAL_BIN="$HOME/.local/bin"
+
+# Repo root when running from a checkout; empty once installed to ~/.local/bin.
+REPO_DIR=""
+if [[ -f "$SCRIPT_DIR/../build_driver.sh" ]]; then
+  REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+
+# ---------------------------------------------------------------------------
+# output helpers
+# ---------------------------------------------------------------------------
+
+if [[ -t 1 ]]; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+  C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
+else
+  C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""; C_GREEN=""; C_YELLOW=""
+fi
+
+info()  { printf '%s\n' "$*"; }
+warn()  { printf '%s%s%s\n' "$C_YELLOW" "$*" "$C_RESET" >&2; }
+die()   { printf '%s%s%s\n' "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
+ok()    { printf '  %s%-22s%s %s\n' "$C_GREEN" "$1" "$C_RESET" "$2"; }
+bad()   { printf '  %s%-22s%s %s\n' "$C_RED" "$1" "$C_RESET" "$2"; }
+note()  { printf '  %s%-22s%s %s\n' "$C_DIM" "$1" "$C_RESET" "$2"; }
+warn_line() { printf '  %s%-22s%s %s\n' "$C_YELLOW" "$1" "$C_RESET" "$2"; }
+head_() { printf '\n%s%s%s\n' "$C_BOLD" "$1" "$C_RESET"; }
+
+# ---------------------------------------------------------------------------
+# environment discovery
+# ---------------------------------------------------------------------------
+
+have_systemd_user() {
+  command -v systemctl >/dev/null 2>&1 &&
+    systemctl --user show-environment >/dev/null 2>&1
+}
+
+require_systemd_user() {
+  have_systemd_user || die \
+"No systemd user session available.
+
+  systemctl --user is not responding. This happens over plain su/ssh without a
+  session bus. Log in normally, or run the driver in the foreground with:
+      g13ctl run"
+}
+
+unit_installed() { [[ -f "$SYSTEMD_USER_DIR/$UNIT" ]]; }
+
+require_installed() {
+  unit_installed || die \
+"$UNIT is not installed.
+
+  Install it with:
+      ./scripts/g13ctl install"
+}
+
+# Load G13_DRIVER_BIN / G13_WAIT_INTERVAL from the env file without letting the
+# file run arbitrary shell: only KEY=VALUE lines are accepted.
+load_env_file() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  local line key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"; value="${line#*=}"
+    key="${key//[[:space:]]/}"
+    value="${value%\"}"; value="${value#\"}"
+    case "$key" in
+      G13_DRIVER_BIN|G13_WAIT_INTERVAL)
+        # Do not clobber a value already exported by systemd or the caller.
+        [[ -n "${!key:-}" ]] || printf -v "$key" '%s' "$value"
+        ;;
+    esac
+  done < "$ENV_FILE"
+}
+
+resolve_driver_bin() {
+  load_env_file
+  local candidates=()
+  [[ -n "${G13_DRIVER_BIN:-}" ]] && candidates+=("$G13_DRIVER_BIN")
+  [[ -n "$REPO_DIR" ]] && candidates+=("$REPO_DIR/src/Linux-G13-Driver")
+  candidates+=("$LOCAL_BIN/g13-driver")
+
+  local c
+  for c in "${candidates[@]}"; do
+    [[ -x "$c" ]] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
+# Echo the /dev/bus/usb node for an attached G13, or return 1.
+find_device_node() {
+  local d busnum devnum
+  for d in /sys/bus/usb/devices/*; do
+    [[ -r "$d/idVendor" && -r "$d/idProduct" ]] || continue
+    [[ "$(<"$d/idVendor")"  == "$G13_VENDOR"  ]] || continue
+    [[ "$(<"$d/idProduct")" == "$G13_PRODUCT" ]] || continue
+    [[ -r "$d/busnum" && -r "$d/devnum" ]] || continue
+    busnum="$(<"$d/busnum")"; devnum="$(<"$d/devnum")"
+    printf '/dev/bus/usb/%03d/%03d\n' "$busnum" "$devnum"
+    return 0
+  done
+  return 1
+}
+
+# The unit execs the driver over the wrapper, so MainPID is the driver once it
+# is actually running. While waiting for the device, MainPID is still g13ctl.
+main_pid_is_driver() {
+  local pid="$1" cmdline
+  [[ -n "$pid" && "$pid" != "0" && -r "/proc/$pid/cmdline" ]] || return 1
+  cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" || return 1
+  [[ "$cmdline" == *Linux-G13-Driver* ]]
+}
+
+uinput_node() {
+  local n
+  for n in /dev/input/uinput /dev/uinput; do
+    [[ -e "$n" ]] && { printf '%s\n' "$n"; return 0; }
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# run - foreground supervised driver, used as the unit's ExecStart
+# ---------------------------------------------------------------------------
+
+cmd_run() {
+  local driver node uinput interval waited=0
+  interval="${G13_WAIT_INTERVAL:-2}"
+
+  driver="$(resolve_driver_bin)" || die \
+"Driver binary not found or not executable.
+
+  Build it with:
+      ./build_driver.sh --force
+  or point G13_DRIVER_BIN at an existing build in $ENV_FILE"
+
+  # Wait for a *usable* device rather than exiting. Neither an unplugged G13 nor
+  # a device we lack permission on should turn into a restart loop: both clear
+  # up on a replug, and this picks that up without systemd cycling the unit.
+  # The reason is logged only when it changes, so a long wait stays quiet.
+  local reason announced=""
+  while true; do
+    if ! node="$(find_device_node)"; then
+      reason="Waiting for Logitech G13 ($G13_VENDOR:$G13_PRODUCT) to be connected..."
+    elif [[ ! -w "$node" ]]; then
+      reason="Waiting for write access to $node - replug the G13. If that does not help, run: sudo $SCRIPT_DIR/g13ctl udev-install"
+    elif ! uinput="$(uinput_node)"; then
+      reason="Waiting for a uinput device - load the module with: sudo modprobe uinput"
+    elif [[ ! -w "$uinput" ]]; then
+      reason="Waiting for write access to $uinput - run: sudo $SCRIPT_DIR/g13ctl udev-install"
+    else
+      break
+    fi
+
+    if [[ "$reason" != "$announced" ]]; then
+      info "$reason"
+      announced="$reason"
+    fi
+    waited=$((waited + 1))
+    sleep "$interval"
+  done
+  (( waited > 0 )) && info "G13 ready at $node"
+
+  info "Starting $driver"
+  # exec so systemd tracks the driver directly and SIGTERM reaches it.
+  exec "$driver"
+}
+
+# ---------------------------------------------------------------------------
+# install / uninstall
+# ---------------------------------------------------------------------------
+
+cmd_install() {
+  local enable=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --no-enable) enable=0; shift ;;
+      *) die "Unknown option for install: $1" ;;
+    esac
+  done
+
+  [[ -n "$REPO_DIR" ]] || die "install must be run from the repository checkout: ./scripts/g13ctl install"
+
+  local unit_src="$REPO_DIR/scripts/g13-driver.service"
+  local env_src="$REPO_DIR/scripts/g13-driver.env.example"
+  [[ -f "$unit_src" && -f "$env_src" ]] || die "Missing scripts/g13-driver.service or scripts/g13-driver.env.example"
+
+  local driver="$REPO_DIR/src/Linux-G13-Driver"
+  [[ -x "$driver" ]] || warn "Driver binary not built yet at $driver - run ./build_driver.sh --force"
+
+  mkdir -p "$LOCAL_BIN" "$CONFIG_DIR" "$SYSTEMD_USER_DIR"
+
+  install -m 0755 "$REPO_DIR/scripts/g13ctl" "$LOCAL_BIN/g13ctl"
+  install -m 0644 "$unit_src" "$SYSTEMD_USER_DIR/$UNIT"
+  # Keep the udev rule next to the config so `sudo g13ctl udev-install` works
+  # from the installed copy, without needing the repo checkout to be present.
+  [[ -f "$REPO_DIR/$UDEV_RULE" ]] && install -m 0644 "$REPO_DIR/$UDEV_RULE" "$CONFIG_DIR/$UDEV_RULE"
+
+  if [[ -f "$ENV_FILE" ]]; then
+    info "Keeping existing $ENV_FILE"
+    if grep -q '^G13_DRIVER_BIN=' "$ENV_FILE"; then
+      sed -i "s#^G13_DRIVER_BIN=.*#G13_DRIVER_BIN=$driver#" "$ENV_FILE"
+    else
+      printf 'G13_DRIVER_BIN=%s\n' "$driver" >> "$ENV_FILE"
+    fi
+  else
+    sed "s#%REPO%#$REPO_DIR#g" "$env_src" > "$ENV_FILE"
+    chmod 0600 "$ENV_FILE"
+  fi
+
+  info "Installed:"
+  info "  $LOCAL_BIN/g13ctl"
+  info "  $SYSTEMD_USER_DIR/$UNIT"
+  info "  $ENV_FILE"
+  [[ -f "$CONFIG_DIR/$UDEV_RULE" ]] && info "  $CONFIG_DIR/$UDEV_RULE"
+
+  require_systemd_user
+  systemctl --user daemon-reload
+
+  if [[ "$enable" -eq 1 ]]; then
+    systemctl --user enable --now "$UNIT"
+    info ""
+    info "Service enabled and started."
+  else
+    info ""
+    info "Files installed. Enable when ready:"
+    info "  g13ctl start"
+  fi
+
+  if [[ ! -e /etc/udev/rules.d/$UDEV_RULE ]]; then
+    info ""
+    warn "udev rules are not installed - the driver needs device access."
+    warn "Run:  sudo $REPO_DIR/scripts/g13ctl udev-install"
+  fi
+}
+
+cmd_uninstall() {
+  if have_systemd_user && unit_installed; then
+    systemctl --user disable --now "$UNIT" 2>/dev/null || true
+  fi
+  rm -f "$SYSTEMD_USER_DIR/$UNIT"
+  have_systemd_user && systemctl --user daemon-reload || true
+  info "Removed $SYSTEMD_USER_DIR/$UNIT"
+  info "Left in place (delete by hand if you want them gone):"
+  info "  $ENV_FILE"
+  info "  $LOCAL_BIN/g13ctl"
+  info "  /etc/udev/rules.d/$UDEV_RULE"
+}
+
+cmd_udev_install() {
+  [[ "$(id -u)" -eq 0 ]] || die "udev-install must run as root:  sudo $0 udev-install"
+  # sudo sets HOME=/root, so resolve the invoking user's config dir explicitly
+  # rather than trusting $CONFIG_DIR here.
+  local invoking_home=""
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    invoking_home="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+  fi
+
+  local -a searched=("$SCRIPT_DIR/../$UDEV_RULE" "$SCRIPT_DIR/$UDEV_RULE")
+  [[ -n "$invoking_home" ]] && searched+=("$invoking_home/.config/g13/$UDEV_RULE")
+
+  local src="" c
+  for c in "${searched[@]}"; do
+    [[ -f "$c" ]] && { src="$c"; break; }
+  done
+
+  if [[ -z "$src" ]]; then
+    printf '%sCould not find %s. Looked in:%s\n' "$C_RED" "$UDEV_RULE" "$C_RESET" >&2
+    for c in "${searched[@]}"; do printf '  %s\n' "$c" >&2; done
+    printf '\nRun it from the repository checkout instead:\n  sudo ./scripts/g13ctl udev-install\n' >&2
+    exit 1
+  fi
+  info "Using rule file: $src"
+
+  install -m 0644 "$src" "/etc/udev/rules.d/$UDEV_RULE"
+  info "Installed /etc/udev/rules.d/$UDEV_RULE"
+
+  udevadm control --reload-rules
+  # logind assigns uaccess ACLs on "add", not "change", so re-emit add events -
+  # otherwise the rule only takes effect after a physical replug.
+  udevadm trigger --action=add --subsystem-match=usb \
+    --attr-match=idVendor="$G13_VENDOR" --attr-match=idProduct="$G13_PRODUCT"
+  udevadm trigger --action=add --subsystem-match=misc --sysname-match=uinput
+  udevadm settle 2>/dev/null || true
+  info "Reloaded udev rules and re-emitted device add events."
+
+  # Report whether the invoking user actually gained access.
+  local target_user="${SUDO_USER:-}" node
+  if [[ -n "$target_user" ]] && node="$(find_device_node)"; then
+    if sudo -u "$target_user" test -w "$node" 2>/dev/null; then
+      info ""
+      info "$node is now writable by $target_user."
+      info "Start the driver with:  g13ctl start"
+    else
+      info ""
+      warn "$node is still not writable by $target_user."
+      warn "Unplug and replug the G13. If that does not help, add the user to"
+      warn "the 'input' group as a fallback:"
+      warn "    sudo usermod -aG input $target_user   # then log out and back in"
+    fi
+  else
+    info ""
+    info "Plug in the G13 (or replug it) so the new permissions apply."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# lifecycle
+# ---------------------------------------------------------------------------
+
+cmd_start() {
+  require_systemd_user; require_installed
+  systemctl --user start "$UNIT"
+  info "Started $UNIT"
+}
+
+cmd_stop() {
+  require_systemd_user; require_installed
+  systemctl --user stop "$UNIT"
+  info "Stopped $UNIT"
+}
+
+cmd_restart() {
+  require_systemd_user; require_installed
+  systemctl --user restart "$UNIT"
+  info "Restarted $UNIT"
+}
+
+cmd_enable() {
+  require_systemd_user; require_installed
+  systemctl --user enable --now "$UNIT"
+  info "Enabled $UNIT at login"
+}
+
+cmd_disable() {
+  require_systemd_user; require_installed
+  systemctl --user disable --now "$UNIT"
+  info "Disabled $UNIT"
+}
+
+cmd_logs() {
+  require_systemd_user
+  command -v journalctl >/dev/null 2>&1 || die "journalctl not available"
+  local follow=0 lines=100
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--follow) follow=1; shift ;;
+      -n|--lines) lines="${2:?-n needs a value}"; shift 2 ;;
+      *) die "Unknown option for logs: $1" ;;
+    esac
+  done
+  if [[ "$follow" -eq 1 ]]; then
+    journalctl --user -u "$UNIT" -n "$lines" -f
+  else
+    journalctl --user -u "$UNIT" -n "$lines" --no-pager
+  fi
+}
+
+cmd_status() {
+  local active="unknown" enabled="unknown" mainpid=""
+
+  head_ "Service"
+  if ! have_systemd_user; then
+    bad "systemd user" "not available (systemctl --user is not responding)"
+  elif ! unit_installed; then
+    bad "unit" "$UNIT not installed - run: ./scripts/g13ctl install"
+  else
+    active="$(systemctl --user is-active "$UNIT" 2>/dev/null || true)"
+    enabled="$(systemctl --user is-enabled "$UNIT" 2>/dev/null || true)"
+    mainpid="$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || true)"
+
+    if [[ "$active" == "active" ]]; then
+      if main_pid_is_driver "$mainpid"; then
+        ok "state" "active, driver running (PID $mainpid)"
+      else
+        warn_line "state" "active, but waiting for the device (PID ${mainpid:-?})"
+      fi
+    else
+      bad "state" "${active:-inactive}"
+    fi
+    case "$enabled" in
+      enabled) ok  "at login" "enabled" ;;
+      *)       note "at login" "${enabled:-disabled}" ;;
+    esac
+    note "unit" "$SYSTEMD_USER_DIR/$UNIT"
+  fi
+
+  head_ "Device"
+  local node
+  if node="$(find_device_node)"; then
+    ok "G13" "$G13_VENDOR:$G13_PRODUCT at $node"
+    if [[ -w "$node" ]]; then
+      ok "usb access" "writable"
+    else
+      bad "usb access" "not writable - run: sudo $SCRIPT_DIR/g13ctl udev-install"
+    fi
+  else
+    bad "G13" "not connected"
+  fi
+
+  local uinput
+  if uinput="$(uinput_node)"; then
+    if [[ -w "$uinput" ]]; then
+      ok "uinput" "$uinput writable"
+    else
+      bad "uinput" "$uinput not writable"
+    fi
+  else
+    bad "uinput" "no uinput device (sudo modprobe uinput)"
+  fi
+
+  if [[ -e "/etc/udev/rules.d/$UDEV_RULE" ]]; then
+    ok "udev rules" "/etc/udev/rules.d/$UDEV_RULE"
+  else
+    bad "udev rules" "not installed"
+  fi
+
+  head_ "Configuration"
+  local driver
+  if driver="$(resolve_driver_bin)"; then
+    ok "driver binary" "$driver"
+  else
+    bad "driver binary" "not found - run ./build_driver.sh --force"
+  fi
+
+  if [[ -f "$ENV_FILE" ]]; then
+    ok "env file" "$ENV_FILE"
+  else
+    note "env file" "$ENV_FILE (absent, using defaults)"
+  fi
+
+  local bindings
+  bindings="$(ls "$HOME"/.g13/bindings-*.properties 2>/dev/null | wc -l)"
+  if [[ "$bindings" -gt 0 ]]; then
+    ok "bindings" "$bindings file(s) in ~/.g13"
+  else
+    bad "bindings" "none in ~/.g13 - generate them with the GUI jar"
+  fi
+
+  if [[ "$active" == "active" ]] && command -v journalctl >/dev/null 2>&1; then
+    head_ "Recent log"
+    journalctl --user -u "$UNIT" -n 8 --no-pager -o cat 2>/dev/null | sed 's/^/  /' || true
+  fi
+  printf '\n'
+}
+
+cmd_doctor() {
+  cmd_status
+
+  head_ "Hints"
+  if ! find_device_node >/dev/null; then
+    info "  - The G13 is not attached. Plug it in and re-run."
+  fi
+  if ! id -nG | tr ' ' '\n' | grep -qx input; then
+    info "  - You are not in the 'input' group. This only matters if uaccess"
+    info "    does not cover you (headless / non-logind login). Add yourself with:"
+    info "      sudo usermod -aG input $USER    # then log out and back in"
+  fi
+  info "  - LCD page commands run from the service environment, not your shell."
+  info "    Put STEAM_API_KEY, OPENAI_API_KEY, etc. in $ENV_FILE"
+  info "  - Full logs:  g13ctl logs -f"
+  printf '\n'
+}
+
+usage() {
+  cat <<'USAGE'
+g13ctl - control the Linux G13 driver service
+
+Usage: g13ctl <command> [options]
+
+Lifecycle:
+  start                 Start the driver service
+  stop                  Stop the driver service
+  restart               Restart the driver service
+  status                Show service, device, permission and config state
+  logs [-f] [-n N]      Show driver logs (-f to follow)
+
+Setup:
+  install [--no-enable] Install the user service, env file and g13ctl itself
+  uninstall             Stop, disable and remove the user service
+  udev-install          Install device permission rules (run with sudo)
+  enable / disable      Start at login, or not
+  doctor                status plus troubleshooting hints
+
+Internal:
+  run                   Run the driver in the foreground (used by the unit)
+
+The driver runs as a systemd *user* service: config comes from ~/.g13, LCD page
+commands run as you, and udev's uaccess tag grants device access without root.
+USAGE
+}
+
+main() {
+  local cmd="${1:-status}"
+  [[ $# -gt 0 ]] && shift || true
+  case "$cmd" in
+    start)        cmd_start "$@" ;;
+    stop)         cmd_stop "$@" ;;
+    restart)      cmd_restart "$@" ;;
+    status)       cmd_status "$@" ;;
+    logs)         cmd_logs "$@" ;;
+    install)      cmd_install "$@" ;;
+    uninstall)    cmd_uninstall "$@" ;;
+    udev-install) cmd_udev_install "$@" ;;
+    enable)       cmd_enable "$@" ;;
+    disable)      cmd_disable "$@" ;;
+    doctor)       cmd_doctor "$@" ;;
+    run)          cmd_run "$@" ;;
+    -h|--help|help) usage ;;
+    *) printf 'Unknown command: %s\n\n' "$cmd" >&2; usage >&2; exit 1 ;;
+  esac
+}
+
+main "$@"

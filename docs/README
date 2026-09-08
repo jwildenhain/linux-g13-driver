@@ -1,80 +1,59 @@
 README
 
 Notes:
-- This fork provides a practical Linux G13 setup with bindings/macros in `~/.g13` and a C++ driver.
-- The top 4 buttons below the LCD select the active bindings page.
-- The joystick is mapped as directional keys in this branch.
+- This fork provides a Linux G13 setup with bindings/macros in `~/.g13` and a C++ driver.
+- The top 4 buttons below the LCD switch LCD pages in LogiFrame mode.
 
 Requirements:
 - libusb-1.0-0-dev
-- ant and JDK 8+ (Java 1.6+ compatibility target in project)
+- ant and JDK 8+
 
-Download:
-- Clone or unpack the project sources from the repository/release.
+Setup (Ubuntu 22.04):
 
-Build (Ubuntu 22.04):
-
-1) Install deps:
-
-```
+```bash
 sudo apt update
 sudo apt install -y git build-essential ant default-jdk default-jre libusb-1.0-0-dev
-```
-
-2) Build driver:
-
-```bash
 ./build_driver.sh --force
-```
-
-3) Build GUI (optional):
-
-```bash
 cd src
 ant
 ```
 
-Running Application:
-
-1) Create configs by running the GUI once (it creates `~/.g13/bindings-*.properties` and `~/.g13/macro-*.properties`):
+Running:
 
 ```bash
+# create configs first
 java -jar deploy/Linux-G13_v1.0-r<revision>/Linux-G13-GUI.jar
-```
-
-2) Start driver:
-
-```bash
 cd src
 sudo -E ./Linux-G13-Driver
 ```
 
-3) To detach:
-
-```bash
-sudo -E ./Linux-G13-Driver &
-```
-
-If configuration is edited while running, restart the driver for guaranteed reload.
-
-Config file format (generated or manual):
-
-`~/.g13/bindings-0.properties`
+Generated/default fields now include LogiFrame page bindings and colors:
 
 ```properties
 color=255,255,255
-G1=p,k.3
-G2=p,k.4
-G21=m,0,1
+lcd_mode=logiframe
+lcd_logiframe_page_count=4
+lcd_logiframe_page1_cmd=
+lcd_logiframe_page2_cmd=if [ -r $HOME/.cache/g13/steam_online_friends.txt ]; then printf 'Steam Friends\n'; cat $HOME/.cache/g13/steam_online_friends.txt; else printf 'Steam Friends\nNo friend cache in $HOME/.cache/g13/steam_online_friends.txt\n'; fi
+lcd_logiframe_page3_cmd=if [ -r $HOME/.cache/g13/token_usage.txt ]; then printf 'Token Usage\n'; cat $HOME/.cache/g13/token_usage.txt; else printf 'Token Usage\nantigravity: N/A\ngemini: N/A\ncodex/gpt: N/A\n'; fi
+lcd_logiframe_page4_cmd=
+lcd_logiframe_page1_color=0,128,255
+lcd_logiframe_page2_color=255,153,0
+lcd_logiframe_page3_color=0,200,64
+lcd_logiframe_page4_color=255,64,64
 ```
 
-`~/.g13/macro-0.properties`
+LogiFrame behavior:
+- `M1` shows usage stats (built-in),
+- `M2` uses page2 command,
+- `M3` uses page3 command,
+- `M4` uses page4/command4.
 
-```properties
-name=ALT-TAB
-sequence=kd.56,kd.15,d.20,ku.15,ku.56
-id=0
-```
+The LogiFrame parser accepts either line-mode text or ASCII PBM (`P1`) output from your command.
 
-Display update:
-- The driver now writes CPU, MEM, GPU, NET, and DSK lines to the LCD every second.
+Mode LEDs still use `mod` (`M1=1, M2=2, M3=4, MR=8`), while page colors use `lcd_logiframe_pageN_color`.
+
+Steam integration:
+- Start Steam after the driver when possible.
+- Choose keyboard vs Steam Input mode per game in Steam settings.
+- Keep `lcd_mode` valid (`stats`/`fifo`/`logiframe`) while testing input behavior.

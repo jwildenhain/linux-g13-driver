@@ -1,0 +1,16 @@
+[Unit]
+Description=Linux G13 LCD DBus FIFO writer
+After=default.target
+Wants=default.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/g13/lcd-fifo-writer-dbus.env
+ExecStart=/bin/bash -lc 'exec "$SCRIPT_PATH"'
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

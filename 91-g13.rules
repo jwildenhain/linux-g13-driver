@@ -1,2 +1,13 @@
-SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="c21c", MODE="0660", GROUP="input"
-KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input"
+# Logitech G13 Advanced Gameboard - device access for the userspace driver.
+#
+# Install with:  sudo ./scripts/g13ctl udev-install
+#
+# TAG+="uaccess" hands the raw USB node to whoever owns the active local
+# session, which is what lets the driver run as an unprivileged systemd user
+# service instead of under sudo. MODE/GROUP are the fallback for headless or
+# non-logind setups, where the user must be a member of the "input" group.
+SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="c21c", TAG+="uaccess", MODE="0660", GROUP="input"
+
+# uinput is how the driver injects key events. static_node applies the mode and
+# group even when the module is autoloaded on first open.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput", MODE="0660", GROUP="input"
