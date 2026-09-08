@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <ctime>
+#include <chrono>
 #include <sys/statvfs.h>
 #include <dirent.h>
 #include <errno.h>
@@ -540,6 +541,13 @@ void G13::loadBindings() {
     this->logiframe_page_count = 4;
     this->logiframe_page = 0;
     this->mode_profiles = false;
+    stats_poll_seconds = 1;
+    stats_average_seconds = 5;
+    stats_average.clear();
+    stats_lines.clear();
+    last_stats_sample = -1;
+    prev_threads.clear();
+    has_prev_cpu = has_prev_net = has_prev_disk = false;
 
       while (file.good()) {
           string line;
@@ -557,6 +565,15 @@ void G13::loadBindings() {
               trim(key);
               if (strlen(key) == 0 || key[0] == '#') {
                   continue;
+              }
+              else if (strcmp(key, "stats_poll_seconds") == 0 || strcmp(key, "stats_average_seconds") == 0) {
+                  bool poll = strcmp(key, "stats_poll_seconds") == 0;
+                  char *value = strtok(NULL, " ,\n");
+                  int seconds = value ? atoi(value) : 0;
+                  if (seconds >= 1 && seconds <= 60) {
+                      if (poll) stats_poll_seconds = seconds;
+                      else stats_average_seconds = seconds;
+                  }
               }
               else if (strcmp(key, "mode_profiles") == 0) {
                   char *value = strtok(NULL, " ,\n");
@@ -1098,7 +1115,7 @@ void G13::write_lcd() {
 }
 
 void G13::write_char(int x, int y, char c) {
-    if (c < 32 || c > 127) {
+    if (static_cast<unsigned char>(c) < 32 || static_cast<unsigned char>(c) > 126) {
         c = 32;
     }
 
@@ -1168,6 +1185,60 @@ bool G13::read_cpu_sample(unsigned long long *total, unsigned long long *idle) {
     }
 
     return true;
+}
+
+int G13::read_active_threads(const string &path) {
+    ifstream file(path);
+    if (!file.is_open()) {
+        prev_threads.clear();
+        return -1;
+    }
+    map<string, pair<unsigned long long, unsigned long long> > current;
+    string line;
+    int active = 0, compared = 0;
+    while (getline(file, line)) {
+        istringstream input(line);
+        string name;
+        input >> name;
+        if (name.size() < 4 || name.compare(0, 3, "cpu") != 0 || !isdigit(name[3])) continue;
+        unsigned long long values[8] = {}, total = 0;
+        int count = 0;
+        while (count < 8 && (input >> values[count])) count++;
+        if (count < 4) continue;
+        // Guest counters beyond these eight fields are already included in user/nice.
+        for (int i = 0; i < count; i++) total += values[i];
+        unsigned long long idle = values[3] + values[4];
+        current[name] = make_pair(total, idle);
+        auto previous = prev_threads.find(name);
+        if (previous == prev_threads.end()) continue;
+        if (total <= previous->second.first || idle < previous->second.second) continue;
+        unsigned long long dt = total - previous->second.first;
+        unsigned long long di = idle - previous->second.second;
+        if (di > dt) continue;
+        compared++;
+        if (static_cast<double>(dt - di) / dt > 0.05) active++;
+    }
+    prev_threads.swap(current);
+    return compared ? active : -1;
+}
+
+int G13::read_psu_watts(const string &root) {
+    // Identify the PSU and its total-power label, never sum independently sampled rails.
+    for (int h = 0; h < 64; h++) {
+        string base = root + "/hwmon" + to_string(h);
+        string name;
+        if (!read_text_file(base + "/name", &name) || name != "corsairpsu") continue;
+        for (int sensor = 1; sensor < 32; sensor++) {
+            string prefix = base + "/power" + to_string(sensor);
+            string label;
+            if (!read_text_file(prefix + "_label", &label) || label != "power total") continue;
+            ifstream input(prefix + "_input");
+            long long microwatts;
+            if ((input >> microwatts) && microwatts >= 0 && microwatts <= 1000000000000LL)
+                return static_cast<int>((microwatts + 500000) / 1000000);
+        }
+    }
+    return -1;
 }
 
 bool G13::read_mem_percent(int *percent) {
@@ -1323,66 +1394,73 @@ bool G13::read_disk_io_speed(unsigned long long *read_per_sec, unsigned long lon
     return true;
 }
 
-bool G13::read_gpu_line(string *text) {
-    char buffer[128];
-    FILE *fp = popen("nvidia-smi --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null", "r");
+static long long gpu_number(const string &field) {
+    istringstream input(field);
+    long long value;
+    if (!(input >> value) || value < 0) return -1;
+    input >> ws;
+    return input.eof() ? value : -1;
+}
+
+string G13::format_gpu_line(long long usage, long long used, long long total, long long temperature, double sample_time) {
+    long long percent = used >= 0 && total > 0 ? (used >= total ? 100 : static_cast<int>(100.0 * used / total + 0.5)) : -1;
+    if (sample_time >= 0) {
+        usage = lround(stats_average.add("gpu", usage, sample_time, stats_average_seconds));
+        percent = lround(stats_average.add("vram", percent, sample_time, stats_average_seconds));
+        temperature = lround(stats_average.add("gpu_temp", temperature, sample_time, stats_average_seconds));
+    }
+    string gpu = usage >= 0 ? to_string(usage > 100 ? 100 : usage) + "%" : "n/a";
+    string memory = "n/a";
+    if (percent >= 0) {
+        memory = to_string(percent) + "%";
+    }
+    string temp = temperature >= 0 && temperature <= 999 ? to_string(temperature) + "C" : "n/a";
+    return "GPU " + gpu + " MEM " + memory + " " + temp;
+}
+
+bool G13::read_gpu_line(string *text, double sample_time) {
+    char buffer[256];
+    FILE *fp = popen("nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null", "r");
     if (fp != null) {
+        bool available = false;
         if (fgets(buffer, sizeof(buffer), fp) != null) {
-            string value(buffer);
-            if (trim_string(&value)) {
-                int usage = -1;
-                int temperature = -1;
-                if (sscanf(value.c_str(), "%d , %d", &usage, &temperature) >= 1) {
-                    if (usage > 100) {
-                        usage = 100;
-                    }
-                    else if (usage < 0) {
-                        usage = 0;
-                    }
-
-                    char buf[32];
-                    if (temperature >= 0) {
-                        sprintf(buf, "GPU %3d%% %2dC", usage, temperature);
-                    }
-                    else {
-                        sprintf(buf, "GPU %3d%%", usage);
-                    }
-                    *text = buf;
-                    pclose(fp);
-                    return true;
-                }
+            istringstream csv(buffer);
+            string field;
+            long long values[4] = {-1, -1, -1, -1};
+            for (int i = 0; i < 4 && getline(csv, field, ','); i++) {
+                values[i] = gpu_number(field);
             }
+            available = values[0] >= 0 || (values[1] >= 0 && values[2] > 0) || values[3] >= 0;
+            if (available) *text = format_gpu_line(values[0], values[1], values[2], values[3], sample_time);
         }
-
         pclose(fp);
+        if (available) return true;
     }
 
+    for (int i = 0; i < 3; i++) {
+        string device = "/sys/class/drm/card" + to_string(i) + "/device";
+        ifstream busy(device + "/gpu_busy_percent");
+        long long usage = -1;
+        if (!(busy >> usage) || usage < 0) continue;
 
-    const char *paths[] = {
-        "/sys/class/drm/card0/device/gpu_busy_percent",
-        "/sys/class/drm/card1/device/gpu_busy_percent",
-        "/sys/class/drm/card2/device/gpu_busy_percent",
-        null
-    };
-
-    for (int i = 0; paths[i] != null; i++) {
-        ifstream file(paths[i]);
-        if (!file.is_open()) {
-            continue;
-        }
-
-        int value = -1;
-        if ((file >> value) && (value >= 0)) {
-            char buf[32];
-            if (value > 100) {
-                value = 100;
+        long long used = -1, total = -1;
+        ifstream used_file(device + "/mem_info_vram_used");
+        ifstream total_file(device + "/mem_info_vram_total");
+        used_file >> used;
+        total_file >> total;
+        int temperature = -1;
+        DIR *dir = opendir((device + "/hwmon").c_str());
+        if (dir != null) {
+            struct dirent *entry;
+            while ((entry = readdir(dir)) != null) {
+                if (strncmp(entry->d_name, "hwmon", 5) == 0 &&
+                    read_temperature_file(device + "/hwmon/" + entry->d_name + "/temp1_input", &temperature)) break;
             }
-            sprintf(buf, "GPU %3d%%", value);
-            *text = buf;
-            return true;
+            closedir(dir);
         }
+        *text = format_gpu_line(usage, used, total, temperature, sample_time);
+        return true;
     }
-
     return false;
 }
 
@@ -1481,6 +1559,15 @@ void G13::format_speed(unsigned long long bytes_per_sec, string *out) {
 }
 
 void G13::render_stats_to_lcd() {
+    double sample_time = chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count();
+    if (last_stats_sample >= 0 && sample_time - last_stats_sample < stats_poll_seconds && !stats_lines.empty()) {
+        write_lines_to_lcd(stats_lines);
+        return;
+    }
+    last_stats_sample = sample_time;
+    auto average = [&](const string &name, double value) {
+        return stats_average.add(name, value, sample_time, stats_average_seconds);
+    };
     int cpu_percent = -1;
     int mem_percent = -1;
     int disk_percent = -1;
@@ -1504,15 +1591,19 @@ void G13::render_stats_to_lcd() {
         this->has_prev_cpu = true;
     }
 
+    int active_threads = read_active_threads();
+    int psu_watts = read_psu_watts();
     read_mem_percent(&mem_percent);
     read_cpu_temperature(&cpu_temperature);
     read_network_temperature(&network_temperature);
     read_root_temperature(&root_temperature);
 
     string gpu_text;
-    bool has_gpu = read_gpu_line(&gpu_text);
+    bool has_gpu = read_gpu_line(&gpu_text, sample_time);
+    if (!has_gpu) { average("gpu", -1); average("vram", -1); average("gpu_temp", -1); }
 
     string net_speed_text = "n/a";
+    double net_rate = -1;
     unsigned long long rx = 0;
     unsigned long long tx = 0;
     if (read_net_sample(&rx, &tx)) {
@@ -1523,7 +1614,7 @@ void G13::render_stats_to_lcd() {
                 unsigned long long d_rx = (rx > this->prev_net_rx) ? (rx - this->prev_net_rx) : 0;
                 unsigned long long d_tx = (tx > this->prev_net_tx) ? (tx - this->prev_net_tx) : 0;
                 unsigned long long total_per_sec = (d_rx + d_tx) / d_seconds;
-                format_speed(total_per_sec, &net_speed_text);
+                net_rate = total_per_sec;
             }
         }
 
@@ -1535,65 +1626,44 @@ void G13::render_stats_to_lcd() {
 
     unsigned long long disk_read_per_sec = 0;
     unsigned long long disk_write_per_sec = 0;
-    read_disk_io_speed(&disk_read_per_sec, &disk_write_per_sec);
+    bool disk_baseline = has_prev_disk;
+    bool disk_ok = read_disk_io_speed(&disk_read_per_sec, &disk_write_per_sec);
     read_disk_percent(&disk_percent);
 
-    string disk_read_text = "n/a";
-    string disk_write_text = "n/a";
-    if (this->has_prev_disk) {
-        format_speed(disk_read_per_sec, &disk_read_text);
-        format_speed(disk_write_per_sec, &disk_write_text);
-    }
+    cpu_percent = lround(average("cpu", cpu_percent));
+    active_threads = lround(average("threads", active_threads));
+    mem_percent = lround(average("ram", mem_percent));
+    disk_percent = lround(average("root", disk_percent));
+    cpu_temperature = lround(average("cpu_temp", cpu_temperature));
+    network_temperature = lround(average("nic_temp", network_temperature));
+    root_temperature = lround(average("root_temp", root_temperature));
+    psu_watts = lround(average("psu", psu_watts));
+    net_rate = average("network", net_rate);
+    if (net_rate >= 0) format_speed(static_cast<unsigned long long>(net_rate), &net_speed_text);
+    double read_rate = average("read", disk_ok && disk_baseline ? static_cast<double>(disk_read_per_sec) : -1);
+    double write_rate = average("write", disk_ok && disk_baseline ? static_cast<double>(disk_write_per_sec) : -1);
+    string disk_speed = "n/a";
+    double rate = stats_show_write ? write_rate : read_rate;
+    if (rate >= 0) format_speed(static_cast<unsigned long long>(rate), &disk_speed);
 
-    clear_lcd_buffer();
+    string cpu_line = "CPU " + (cpu_percent >= 0 ? to_string(cpu_percent) + "%" : "n/a")
+            + " THR " + (active_threads >= 0 ? to_string(active_threads) : "n/a")
+            + " " + (cpu_temperature >= 0 ? to_string(cpu_temperature) + "C" : "n/a");
 
-    char line[80];
 
-    if (cpu_percent >= 0 && cpu_temperature >= 0) {
-        sprintf(line, "CPU %3d%% %2dC", cpu_percent, cpu_temperature);
-    }
-    else if (cpu_percent >= 0) {
-        sprintf(line, "CPU %3d%%", cpu_percent);
-    }
-    else {
-        sprintf(line, "CPU  n/a");
-    }
-    write_text(0, 0, line);
+    string memory_line = "MEM " + (mem_percent >= 0 ? to_string(mem_percent) + "%" : "n/a")
+            + " PSU " + (psu_watts >= 0 ? to_string(psu_watts) + "W" : "n/a");
 
-    if (mem_percent >= 0 && network_temperature >= 0) {
-        sprintf(line, "MEM %3d%% NIC %2dC", mem_percent, network_temperature);
-    }
-    else if (mem_percent >= 0) {
-        sprintf(line, "MEM %3d%%", mem_percent);
-    }
-    else {
-        sprintf(line, "MEM  n/a");
-    }
-    write_text(0, 8, line);
 
-    if (has_gpu) {
-        write_text(0, 16, gpu_text);
-    }
-    else {
-        write_text(0, 16, "GPU  n/a");
-    }
-
-    sprintf(line, "NET %s", net_speed_text.c_str());
-    write_text(0, 24, line);
-
-    if (disk_percent >= 0 && root_temperature >= 0) {
-        sprintf(line, "ROOT%3d%% %2dC R%s W%s", disk_percent, root_temperature,
-                disk_read_text.c_str(), disk_write_text.c_str());
-    }
-    else if (disk_percent >= 0) {
-        sprintf(line, "ROOT%3d%% R %s W %s", disk_percent, disk_read_text.c_str(), disk_write_text.c_str());
-    }
-    else {
-        sprintf(line, "ROOT n/a R %s W %s", disk_read_text.c_str(), disk_write_text.c_str());
-    }
-    write_text(0, 32, line);
-
-    write_lcd();
+    if (!has_gpu) gpu_text = "GPU n/a";
+    string network_line = "NET " + net_speed_text + " NIC "
+            + (network_temperature >= 0 ? to_string(network_temperature) + "C" : "n/a");
+    string root_line = "ROOT " + (disk_percent >= 0 ? to_string(disk_percent) + "%" : "n/a")
+            + " " + (root_temperature >= 0 ? to_string(root_temperature) + "C" : "n/a")
+            + (stats_show_write ? " W" : " R") + disk_speed;
+    stats_show_write = !stats_show_write;
+    stats_lines = {cpu_line, memory_line, gpu_text, network_line, root_line};
+    write_lines_to_lcd(stats_lines);
 }
 int G13::read() {
     unsigned char buffer[G13_REPORT_SIZE];

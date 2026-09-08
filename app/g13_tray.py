@@ -12,7 +12,7 @@ from g13_config import Config, SOURCES, DEFAULT_CODES, atomic_write
 from g13_providers import render
 
 
-def main():
+def main(on_ready=None):
     import gi
     gi.require_version('Gtk', '3.0')
     gi.require_version('AyatanaAppIndicator3', '0.1')
@@ -30,6 +30,7 @@ def main():
     class Tray:
         def __init__(self):
             self.busy = False
+            self.keypad = None
             self.active_data = copy.deepcopy(config.data)
             self.window = Gtk.Window(title='G13 Control')
             self.window.set_default_size(780, 690)
@@ -49,6 +50,15 @@ def main():
             for i in range(4):
                 page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=12)
                 notebook.append_page(page, Gtk.Label(label=f'M{i+1}' + (' · System' if i == 0 else '')))
+                if i == 0:
+                    for name, label in [('stats_poll_seconds', 'Sample every (seconds)'), ('stats_average_seconds', 'Rolling average (seconds)')]:
+                        setting_row = Gtk.Box(spacing=10)
+                        setting_row.pack_start(Gtk.Label(label=label, xalign=0), True, True, 0)
+                        spinner = Gtk.SpinButton.new_with_range(1, 60, 1)
+                        spinner.set_value(config.data[name])
+                        setattr(self, name, spinner)
+                        setting_row.pack_start(spinner, False, False, 0)
+                        page.pack_start(setting_row, False, False, 0)
                 screen = config.data['screens'][i]
                 row = Gtk.Box(spacing=10)
                 source = Gtk.ComboBoxText()
@@ -113,7 +123,7 @@ def main():
             info.set_line_wrap(True)
             connections.pack_start(info, False, False, 0)
             self.credentials = {}
-            for name, label in [('STEAM_API_KEY','Steam Web API key'), ('STEAM_ID','Steam ID (64-bit)'), ('DISCORD_BOT_TOKEN','Discord bot token'), ('DISCORD_GUILD_ID','Discord server ID'), ('OPENAI_ADMIN_KEY','OpenAI organisation admin key'), ('ANTHROPIC_ADMIN_KEY','Claude organisation admin key')]:
+            for name, label in [('STEAM_API_KEY','Steam Web API key'), ('STEAM_ID','Steam ID (64-bit)'), ('DISCORD_BOT_TOKEN','Discord bot token'), ('DISCORD_GUILD_ID','Discord server ID'), ('OPENAI_ADMIN_KEY','OpenAI organisation admin key'), ('ANTHROPIC_ADMIN_KEY','Claude organisation admin key'), ('ANTIGRAVITY_API_KEY','Antigravity API key (stored only)')]:
                 row = Gtk.Box(spacing=12)
                 lab = Gtk.Label(label=label, xalign=0, width_chars=28)
                 entry = Gtk.Entry(text=config.data['credentials'].get(name,''))
@@ -130,7 +140,7 @@ def main():
             box.pack_start(self.status, False, False, 0)
             actions = Gtk.Box(spacing=10)
             box.pack_start(actions, False, False, 0)
-            for label, callback in [('Save & apply', self.save), ('Refresh stats', self.refresh), ('Hide to tray', lambda *_: self.window.hide())]:
+            for label, callback in [('Configure buttons…', self.open_keypad), ('Save & apply', self.save), ('Refresh stats', self.refresh), ('Hide to tray', lambda *_: self.window.hide())]:
                 button = Gtk.Button(label=label)
                 button.connect('clicked', callback)
                 actions.pack_start(button, False, False, 0)
@@ -138,16 +148,32 @@ def main():
             self.indicator.set_status(Indicator.IndicatorStatus.ACTIVE)
             self.indicator.set_label('G13', 'G13')
             menu = Gtk.Menu()
-            for label, callback in [('G13 settings', lambda *_: self.window.present()), ('Refresh display stats', self.refresh), ('Start driver', lambda *_: self.service('start')), ('Stop driver', lambda *_: self.service('stop')), ('Quit tray', lambda *_: Gtk.main_quit())]:
+            for label, callback in [('Configure G13 buttons…', self.open_keypad), ('G13 settings', lambda *_: self.window.present()), ('Refresh display stats', self.refresh), ('Start driver', lambda *_: self.service('start')), ('Stop driver', lambda *_: self.service('stop')), ('Quit tray', lambda *_: Gtk.main_quit())]:
                 item = Gtk.MenuItem(label=label)
                 item.connect('activate', callback)
                 menu.append(item)
+            from g13_dialogs import CONNECTIONS, credentials_dialog
+            credentials_menu = Gtk.Menu()
+            for source in CONNECTIONS:
+                item = Gtk.MenuItem(label=source + ' credentials…')
+                item.connect('activate', lambda _, source=source: credentials_dialog(self, config, source))
+                credentials_menu.append(item)
+            item = Gtk.MenuItem(label='Credentials')
+            item.set_submenu(credentials_menu)
+            menu.prepend(item)
             menu.show_all()
             self.indicator.set_menu(menu)
             self.window.show_all()
             if '--background' in sys.argv: self.window.hide()
             self.refresh()
             GLib.timeout_add_seconds(60, self.refresh)
+
+        def open_keypad(self, *_):
+            from g13_dialogs import KeypadWindow
+            if self.keypad is None:
+                self.keypad = KeypadWindow(self, config)
+                self.keypad.connect('destroy', lambda *_: setattr(self, 'keypad', None))
+            self.keypad.present()
 
         def key_names(self):
             import re
@@ -180,6 +206,8 @@ def main():
                 for i, (source, color, text, file) in enumerate(self.controls):
                     rgba = color.get_rgba()
                     config.data['screens'][i] = {'source':source.get_active_text(), 'color':','.join(str(round(v*255)) for v in [rgba.red,rgba.green,rgba.blue]), 'text':text.get_text().replace('|','\n'), 'file':file.get_text()}
+                config.data['stats_poll_seconds'] = self.stats_poll_seconds.get_value_as_int()
+                config.data['stats_average_seconds'] = self.stats_average_seconds.get_value_as_int()
                 config.data['credentials'] = {name:entry.get_text().strip() for name,entry in self.credentials.items()}
                 backup = config.save([{key:combo.get_active_id() for key,combo in mapping.items()} for mapping in self.keymaps])
                 self.active_data = copy.deepcopy(config.data)
@@ -213,11 +241,16 @@ def main():
             return True
 
     tray = Tray()
+    if on_ready is not None:
+        GLib.idle_add(on_ready, tray, config)
+    if '--keypad-smoke' in sys.argv:
+        tray.open_keypad()
     if '--smoke-test' in sys.argv:
         def finish_smoke():
-            window = tray.window.get_window()
+            capture = tray.keypad or tray.window
+            window = capture.get_window()
             if window:
-                width, height = tray.window.get_size()
+                width, height = capture.get_size()
                 picture = Gdk.pixbuf_get_from_window(window, 0, 0, width, height)
                 if picture: picture.savev('/tmp/g13-tray-preview.png', 'png', [], [])
             Gtk.main_quit()

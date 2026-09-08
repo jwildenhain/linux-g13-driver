@@ -10,6 +10,24 @@ from g13_config import Config, properties, validate_binding
 from g13_providers import render, api_usage, steam, codex_local
 
 class ConfigTests(unittest.TestCase):
+    def test_stats_timing_validation_and_persistence(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = Config(d)
+            self.assertEqual(c.data['stats_poll_seconds'], 1)
+            self.assertEqual(c.data['stats_average_seconds'], 5)
+            c.data.update(stats_poll_seconds=2, stats_average_seconds=10)
+            c.save([{} for _ in range(4)])
+            for i in range(4):
+                saved = properties(c.bindings / f'bindings-{i}.properties')
+                self.assertEqual(saved['stats_poll_seconds'], '2')
+                self.assertEqual(saved['stats_average_seconds'], '10')
+            self.assertEqual(Config(d).data['stats_average_seconds'], 10)
+            original = (c.bindings / 'bindings-0.properties').read_bytes()
+            for poll, window in [(0,5),(2,1),(1,61),(True,5)]:
+                c.data.update(stats_poll_seconds=poll, stats_average_seconds=window)
+                with self.assertRaises(ValueError): c.save([{} for _ in range(4)])
+                self.assertEqual((c.bindings / 'bindings-0.properties').read_bytes(), original)
+
     def test_preserve_and_backup_and_numbering(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)/'.g13/bindings-0.properties'
@@ -72,5 +90,47 @@ class ProviderTests(unittest.TestCase):
             p.write_text('\n'.join(json.dumps({'type':'event_msg','payload':{'type':'token_count','info':{'total_token_usage':{'input_tokens':v,'output_tokens':2}}}}) for v in [10,20]))
             with patch.dict('g13_providers.os.environ', {'CODEX_HOME':d}):
                 self.assertIn('Input: 20', codex_local())
+
+
+class ProfileImportTests(unittest.TestCase):
+    def test_symbolic_json_and_chords(self):
+        from g13_profiles import convert_profile
+        p={'id':9,'source_id':1,'format':'json','bindings':[
+            {'key_label':'G1','action_type':'key','action_value':'1'},
+            {'key_label':'G2','action_type':'key','action_value':'COMBO:LEFTCTRL+S'},
+            {'key_label':'G3','action_type':'key','action_value':'TYPE:hello'},
+            {'key_label':'M1','action_type':'key','action_value':'F1'}]}
+        mapping,macros,warnings=convert_profile(p,{'macros':[]})
+        self.assertEqual(mapping['G0'],'p,k.2')
+        self.assertEqual(macros[mapping['G1']]['sequence'],'kd.29,kd.31,d.20,ku.31,ku.29')
+        self.assertNotIn('G2',mapping)
+        self.assertEqual(len(warnings),2)
+
+    def test_target_preserves_other_modes_and_screen(self):
+        with tempfile.TemporaryDirectory() as d:
+            c=Config(d);c.save([{'G0':'p,k.16','G1':'p,k.17'}]*4)
+            untouched=(c.bindings/'bindings-0.properties').read_bytes()
+            before=properties(c.bindings/'bindings-2.properties')
+            c.data['screens'][2]['color']='1,2,3' # unrelated unsaved UI edit
+            backup,mapping=c.save_target(2,{'G0':'import:test'},{'import:test':{'name':'Save','sequence':'kd.29,kd.31,ku.31,ku.29'}})
+            after=properties(c.bindings/'bindings-2.properties')
+            self.assertEqual((c.bindings/'bindings-0.properties').read_bytes(),untouched)
+            self.assertEqual(after['G1'],before['G1'])
+            self.assertEqual(after['lcd_logiframe_page3_color'],before['lcd_logiframe_page3_color'])
+            self.assertTrue(after['G0'].startswith('m,1000,'))
+            self.assertTrue((backup/'bindings-2.properties').exists())
+            with self.assertRaises(ValueError): c.save_target(2,{'G29':'p,k.1'})
+
+    def test_credentials_do_not_save_pending_screens(self):
+        with tempfile.TemporaryDirectory() as d:
+            c=Config(d);c.save([{'G0':'p,k.16'}]*4)
+            c.data['screens'][0]['color']='1,2,3'
+            c.save_credentials({'OPENAI_ADMIN_KEY':'test'})
+            saved=json.loads(c.path.read_text())
+            self.assertNotEqual(saved['screens'][0]['color'],'1,2,3')
+            self.assertEqual(saved['credentials']['OPENAI_ADMIN_KEY'],'test')
+            self.assertEqual(c.path.stat().st_mode & 0o777,0o600)
+            c.save_credentials({'OPENAI_ADMIN_KEY':''})
+            self.assertEqual(json.loads(c.path.read_text())['credentials']['OPENAI_ADMIN_KEY'],'')
 
 if __name__ == '__main__': unittest.main()

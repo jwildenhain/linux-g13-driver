@@ -1,406 +1,302 @@
-# Linux G13 Driver
+# Linux G13 Driver & G13 Control
 
-Version: **1.1.0**. See [release notes](CHANGELOG.md) and the
-[follow-up plan awaiting approval](TODO.md). M2–M4 currently have a reported
-scrambled-character issue; M1 system stats are confirmed working.
+A Linux userspace driver and native desktop tray app for the **Logitech G13**. Configure game keys, macros, joystick directions, four mode profiles, backlight colours and LCD statistics from your desktop panel.
 
-This repository is a maintained fork of the original G13 Linux driver with an updated structure for Git and a small set of practical improvements, including live LCD system stats on supported firmware.
+**M1 keeps the built-in system statistics.** M2, M3 and M4 can display service statistics or your own text. The physical **MR** button selects M4.
 
-## Desktop tray app
+![G13 Control showing a game with three independently routed source modes](docs/screenshots/game-modes.png)
 
-G13 Control provides four hardware mode profiles (M1/M2/M3/MR), per-screen
-colours, G1–G22 key/macro selection, and cached service statistics. M1 keeps the
-built-in system display. See [installation, integrations and usage](docs/TRAY.md).
+*Actual GTK screenshots taken with disposable sample settings. They show the configuration app; they are not photographs of the hardware or authenticated service results.*
 
-## Notes
+**Version 1.2.0** includes the LCD font fix, game-profile library, expanded configuration UI and configurable M1 rolling statistics. See the [changelog](CHANGELOG.md) and [remaining verification](TODO.md).
 
-- Originally based on the Google Code project layout.
-- The driver runs as a userspace process and sends input events via `uinput`.
-- LCD-capable builds write live status to the G13 display: CPU, memory, GPU, network and disk usage.
-- In LogiFrame mode, `G26`..`G29` are page selectors.
-- The joystick is currently mapped as directional keys in this branch.
+## What you can do
 
-## Ubuntu 22.04 (and Ubuntu-like) setup
+- Keep G13 Control in the panel notification area; closing its window leaves it running.
+- Configure **M1–M4**, each with its own key assignments and RGB backlight colour.
+- Edit **G1–G22**, the two thumb buttons, and four joystick directions in a clickable G13 view.
+- Switch the drawing between physical button labels and proposed key/macro assignments.
+- Browse a searchable game library, route several source modes to different M slots together, or apply a single mode to any slot.
+- Review current → proposed assignments, exact duplicates, supported-control matches and partial overlaps before saving.
+- Display system statistics, Steam friends, Discord server counts, local Codex counters, organisation API usage, or custom/exported text.
+- Store service credentials in masked dialogs, with separate save/remove and supported connection checks.
 
-### Requirements
+## Install on Ubuntu / Debian
 
-- `libusb-1.0` development package
-- `ant` (for GUI jar build)
-- Java runtime/JDK (JDK 8+; on Ubuntu 22.04 `default-jdk`/`default-jre` is fine)
-
-Install dependencies:
+You need a graphical session with GTK 3 and an AppIndicator/StatusNotifierItem-compatible panel. Ubuntu's GNOME desktop normally includes indicator support; other GNOME installations may need an AppIndicator extension. The driver uses USB and Linux `uinput`, and runs as your user through systemd.
 
 ```bash
 sudo apt update
-sudo apt install -y git build-essential ant default-jdk default-jre libusb-1.0-0-dev
+sudo apt install git build-essential libusb-1.0-0-dev libudev-dev linux-libc-dev \
+  python3 python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
+
+git clone https://github.com/jwildenhain/linux-g13-driver.git
+cd linux-g13-driver
+./build_driver.sh --force
+
+# Recommended: download and convert the complete game collection.
+/usr/bin/python3 tools/import_game_profiles.py
+
+# Grant device access, then install/start the user service.
+sudo ./scripts/g13ctl udev-install
+./scripts/g13ctl install
+
+# Install the desktop app and enable its login autostart.
+./scripts/install-g13-tray
+/usr/bin/python3 ~/.local/share/g13-tray/g13_tray.py
 ```
 
-## Build
+Replug the G13 if device permissions have not taken effect. Run the tray as your normal desktop user. The installer adds **G13 Control** to the application menu and starts it in the background on future desktop logins. Panel placement is controlled by your desktop; on Ubuntu it appears with the tools at the top right.
 
-### 1) Build the C++ driver (required)
+### First setup
 
-From the repository root:
+1. Open **G13 settings** from the panel's **G13** menu.
+2. Leave M1 on **System stats**. Select a screen source and colour for M2–M4. New configurations initially use **Keep existing command** for those screens; choose a source if you do not have legacy commands.
+3. Use **Credentials** in the tray menu to add any required service keys or IDs.
+4. Click **Save & apply** in settings. This creates/updates the four binding files, enables mode-profile switching and restarts the driver.
+5. Open **Configure G13 buttons…** to choose game assignments or edit the saved modes.
+
+![Main settings with the fixed M1 system-statistics page and backlight selector](docs/screenshots/settings.png)
+
+## Modes, screens and colours
+
+| App slot | Physical mode button | Alternate LCD selector | Binding file |
+| --- | --- | --- | --- |
+| M1 | M1 | L1 | `~/.g13/bindings-0.properties` |
+| M2 | M2 | L2 | `~/.g13/bindings-1.properties` |
+| M3 | M3 | L3 | `~/.g13/bindings-2.properties` |
+| M4 | MR | L4 | `~/.g13/bindings-3.properties` |
+
+Saving settings enables `mode_profiles=1`. Switching a mode loads its bindings, selects its LCD page and updates the mode indicator and backlight. Held inputs are released before changing bindings. MR is reserved for M4 selection in this mode.
+
+M1 retains the existing CPU, memory, GPU, network, disk and sensor display. Available measurements depend on the machine. The LCD itself is monochrome, **160 × 43 pixels**; the colour selector changes the shared backlight, not individual text or key colours.
+
+Without `mode_profiles`, the driver retains its legacy page-selection behaviour. Use the tray's **Save & apply** to opt into the four-mode workflow.
+
+### M1 layout
+
+```text
+CPU 7% THR 26 48C
+MEM 32% PSU 282W
+GPU 19% MEM 23% 56C
+NET 12.3KB/s NIC 80C
+```
+
+The fifth row alternates, for example, between `ROOT 32% 42C R12.3KB/s` and `ROOT 32% 42C W8.1KB/s`. R means read and W means write; the speed retains its B/s, KB/s, MB/s or GB/s unit. These are illustrative readings. `THR` counts logical CPU threads above **5% utilisation** since the previous M1 sample, not processes or physical cores. The first sample shows `n/a` while establishing a baseline. PSU watts come from the Corsair PSU's labelled total-power sensor; unavailable readings show `n/a`. Network speed remains combined receive/transmit traffic, followed by NIC temperature.
+
+### M1 sampling and rolling averages
+
+On the **M1** settings tab, **Sample every (seconds)** controls how often hardware statistics are collected (default **1**). **Rolling average (seconds)** controls the trailing window (default **5**). Both accept 1–60 seconds; the averaging window must be at least the sampling interval. Click **Save & apply** to activate them.
+
+Every M1 measurement is averaged over the valid samples in that window, including percentages, temperatures, active-thread counts, PSU watts and network/disk rates. Integer readings are rounded; THR is the rounded average of each sample's active-thread count. Missing readings show `n/a` and clear that metric's previous samples. On startup or after changing modes the window fills with new samples. A window equal to the sampling interval gives effectively unsmoothed readings.
+
+Read/write alternation happens on each new M1 sample. These settings affect M1 only; service/API refresh remains 60 seconds. Driver properties are `stats_poll_seconds` and `stats_average_seconds` in each mode's binding file. Changing polling does not change USB input polling.
+
+### M1 GPU memory
+
+The GPU row reads `GPU 19% MEM 23% 56C`: GPU utilisation, allocated VRAM as a percentage of total VRAM (rounded to the nearest percent), and GPU temperature in Celsius. It is separate from the system RAM row. NVIDIA uses the first GPU reported by `nvidia-smi`; the DRM fallback uses the first available GPU busy counter and its VRAM/temperature files. Missing measurements show `n/a`.
+
+## Assign games and controls
+
+Choose **Configure G13 buttons…** from the tray menu, or **Configure buttons…** in settings.
+
+### Choose a game and its destinations
+
+The library groups a game's source modes into one entry. A **source M1** describes a mode in the imported file; its **destination M1–M4** is where you want to save it on your G13.
+
+- For a three-mode game, route source M1/M2/M3 to M1/M2/M3 and apply them together.
+- For a single-mode game, choose any one destination, including M4.
+- Choose **Skip** for modes you do not want. Two source modes cannot share a destination in the same batch.
+- **Currently saved on G13** reads your saved configuration files. It does not read onboard memory from the USB device. Use it for manual editing or copying saved modes; to copy M1 into M3, first skip the existing source M3 card.
+- **Imported local snapshots**, when present, are archived library entries and may differ from your current saved settings.
+
+Click **Edit M1**, **Edit M2**, etc. on a source-mode card to select the mode you are editing. Draft edits survive switching games while the popup remains open. Closing the popup discards unapplied drafts.
+
+### Edit keys, joystick and thumb buttons
+
+Click a control on the G13 drawing and choose a Linux key, an existing macro, or **Disabled**. Enable **Show assigned keys** to replace physical labels with the proposed assignments. Hover over a button for the full assignment when its compact label is abbreviated.
+
+![Skyrim routed to M4 with assigned labels and the thumb-button editor selected](docs/screenshots/assigned-controls.png)
+
+**T1** is the button to the joystick's left; **T2** is the button below it. The four arrow buttons configure joystick up, left, right and down. All 28 controls can have different assignments in each M slot.
+
+Applying joystick direction assignments enables keyboard mode (`stick_mode=keys`) for that destination. The review explicitly reports this change from analogue operation. Thumb-button edits alone do not change joystick mode. Directions omitted by a source retain their existing assignments.
+
+The main settings window also provides G1–G22 dropdowns. Use the G13 popup for the thumb buttons and joystick directions.
+
+### Review, apply and recover
+
+**Current → proposed** compares each proposed control against its destination's saved assignment. Changed controls are highlighted. Unlisted controls and unsupported imported actions retain their destination assignments; they are not silently disabled.
+
+Click **Review & apply assignments…** to inspect all selected destinations. Cancel writes nothing. Apply validates the entire batch, creates a shared timestamped backup, writes the selected changes and restarts the driver once. Assignment-only changes preserve LCD sources and colours.
+
+If another editor has changed a binding file since the app opened, the save is blocked; reopen the app to reload it. If a batch write fails, the app attempts to restore earlier writes and remove newly created macros. A failed restoration reports the backup location for manual recovery.
+
+Backups live in `~/.g13/backups/<timestamp>/`. To restore, stop the driver, copy the affected `bindings-*.properties` files from the chosen backup into `~/.g13/`, then start the driver again.
+
+### Duplicates and overlap
+
+The **Duplicates & import notes** tab distinguishes:
+
+| Result | Meaning |
+| --- | --- |
+| Exact source match | All source assignments match, including unsupported and non-editable controls. |
+| Same supported control assignments | The usable mappings match, but other source details differ. |
+| Partial overlap | At least eight shared supported controls, with at least 80% agreement; not a duplicate. |
+| Missing / unsupported assignments | These controls require review or manual configuration. |
+
+Comparisons describe original library entries; they do not reclassify your draft edits. Saved-mode comparisons cover all 28 editable controls. Nothing is automatically deleted or merged. For example, the collection's **Default Profile source M2 and M3** match exactly, while **Overwatch 2 M1 and M2** only partially overlap. See the [complete profile audit](docs/PROFILE_AUDIT.md).
+
+## Game-profile collection
+
+The importer includes every XML file from [cheshire137/logitech-g13-profiles](https://github.com/cheshire137/logitech-g13-profiles). At revision `5afe1913d006cc31d54679ed915b36082306cbb0`, **73 XML files produce 79 library entries**, including populated source-mode variants and an empty profile placeholder.
+
+Keystrokes, modifiers and supported multikey sequences are converted to Linux bindings/macros. The auxiliary-control review found **285 joystick/thumb assignments across 64 files and 69 modes**; all 285 now convert, including Going Medieval's Period key. See the [per-game auxiliary assignment audit](docs/AUXILIARY_AUDIT.md).
+
+Known source limitations:
+
+- **Age of Empires III** has no G13 assignments in its source XML. It remains visible for manual configuration.
+- **Dolphin Wii/GameCube Emulator** includes an unsupported mouse-function action.
+- Five source assignments use XML **G25 / TOP**, outside the six auxiliary controls exposed here; these remain reported as unsupported.
+- Source scripts are not executed. Unsupported actions and missing macros appear in the import notes.
+
+The smaller atlas, when available locally, is loaded alongside the game collection. The audited combined library contains **82 groups / 96 source modes**; a fresh checkout with only the game import will not include private/local snapshot entries from that atlas.
+
+Generated datasets stay local and are not committed. Refresh the games with:
+
+```bash
+/usr/bin/python3 tools/import_game_profiles.py
+./scripts/install-g13-tray
+```
+
+Quit and reopen the tray afterwards. The importer follows the upstream default branch, records the revision and replaces `data/g13-games.json`. It does not change saved G13 assignments. To import an already checked-out revision, use `--checkout /path/to/logitech-g13-profiles`.
+
+## LCD statistics and credentials
+
+The tray fetches provider data in a background thread every **60 seconds** and writes bounded text caches: up to five lines of 26 characters. The driver reads those files, keeping network requests out of its USB/input loop. **Refresh display stats** refreshes saved settings immediately. Quitting the tray stops updates; the last cached content remains until refreshed.
+
+| Screen source | What it displays | Requirements and scope |
+| --- | --- | --- |
+| System stats | Built-in machine statistics | Fixed on M1; measurements depend on available hardware/sensors. |
+| Steam | Online friend count and up to three names | Steam Web API key and SteamID64; friend-list privacy affects access. |
+| Discord | Server name, approximate member and online counts | Bot token and server ID; the bot must belong to that server. |
+| Codex local | Input/output counters from the latest modified local session | No key; reads recent session token events. Not account-wide billing or remaining subscription quota. |
+| OpenAI API | Today's UTC organisation input/output token totals | OpenAI organisation admin key; API Platform usage, not ChatGPT/Codex subscription allowance. |
+| Claude API | Today's UTC organisation input/output totals, including input cache tokens | Anthropic organisation admin key; API usage, not Claude Pro/Max remaining quota. |
+| Antigravity / text file | Up to four exported text lines plus file age | Select a regular local text file. You supply/update it; the app does not create an Antigravity export. |
+| Custom text | Up to five lines of your own text | Separate lines using `|` in the settings field. |
+| Keep existing command | Existing legacy page command | Compatibility option. Shell commands execute inside the driver and can delay input if slow. |
+
+Open the tray's **Credentials** submenu for Steam, Discord, OpenAI API, Claude API or Antigravity. Secret fields are masked. **Check connection** uses the entered values without saving; **Save** stores them; **Remove** clears the app's stored values. Credential saves are independent of pending screen/key edits. Credentials are stored locally in `~/.config/g13/tray.json` with owner-only `0600` permissions, not encrypted storage.
+
+![Antigravity credentials dialog explaining local storage and unavailable API checking](docs/screenshots/credentials.png)
+
+**Antigravity currently supports key storage only.** The key is stored as `ANTIGRAVITY_API_KEY`. No supported usage endpoint has been verified, so checking is disabled and the key is not transmitted. Use the text-file source for display content; saving a key does not enable automatic quota statistics.
+
+Provider errors are rendered as short status messages without printing credentials. Live authenticated checks still require user credentials. The automated tests use response fixtures; local Codex counters have been checked against an available session. API details and reference links are in the [tray guide](docs/TRAY.md#screen-connections).
+
+### Get and configure a Steam API key
+
+1. Sign in at [Steam’s official Web API key registration page](https://steamcommunity.com/dev/apikey) and complete its registration form.
+2. Open **Credentials → Steam** from the G13 tray menu.
+3. Enter the key and your **SteamID64**, then use **Check connection** and **Save**.
+4. Select **Steam** as the screen source for M2, M3 or M4, then click **Save & apply**.
+
+The Steam source displays friends online; it does not display Proton versions. Friend-list access depends on Steam privacy settings. Keep the key in the app’s credential field rather than committing it to a configuration example.
+
+## Service control and updates
+
+```bash
+./scripts/g13ctl status
+./scripts/g13ctl doctor
+./scripts/g13ctl restart
+./scripts/g13ctl stop
+./scripts/g13ctl start
+journalctl --user -u g13-driver.service -n 50
+```
+
+The tray menu also offers **Start driver**, **Stop driver**, **Refresh display stats** and **Quit tray**. Closing a settings window only hides it; quitting the tray does not stop the driver.
+
+After updating this checkout, rebuild and reinstall the changed components:
 
 ```bash
 ./build_driver.sh --force
+./scripts/g13ctl restart
+./scripts/install-g13-tray
 ```
 
-This builds `src/Linux-G13-Driver`.
+Quit and reopen the tray to load the installed Python files. Use `--force` after C++ header changes because the existing Makefile does not track header dependencies. Keep the checkout in place: the installed driver service uses its configured binary path.
 
-### 2) Build the Java GUI (optional, for editing bindings/macros)
+To disable tray login autostart, remove `~/.config/autostart/g13-control.desktop`. To stop and remove the user driver service, run `./scripts/g13ctl uninstall`. Your binding files and backups can be retained for later use.
 
-From the repository root:
+## Configuration files and legacy macro editor
 
-```bash
-cd src
-ant
-```
-
-The GUI jar is produced in the deploy folder, for example:
-
-- `deploy/Linux-G13_v1.0-r<revision>/Linux-G13-GUI.jar`
-
-## Running
-
-### 1) Generate/update config (`.properties`) files
-
-Run the config tool:
-
-```bash
-java -jar deploy/Linux-G13_v1.0-r<revision>/Linux-G13-GUI.jar
-```
-
-The GUI creates and saves the config files on first run at:
-
-- `~/.g13/bindings-0.properties` ... `~/.g13/bindings-3.properties`
-- `~/.g13/macro-0.properties` and additional macro files as needed
-
-You can also create them manually. Required format is Java properties text:
-
-```properties
-# ~/.g13/bindings-0.properties
-color=255,255,255
-lcd_mode=logiframe
-lcd_logiframe_page_count=4
-lcd_logiframe_page1_cmd=
-lcd_logiframe_page2_cmd=if [ -z "$STEAM_API_KEY" ] || ( [ -z "$STEAM_ID" ] && [ -z "$STEAM_STEAMID" ] ); then printf 'Steam Friends\\nSet STEAM_API_KEY and STEAM_ID/STEAM_STEAMID env vars\\n'; exit 0; fi; if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then printf 'Steam Friends\\nInstall curl and jq\\n'; exit 0; fi; steam_id="${STEAM_ID:-${STEAM_STEAMID:-}}"; friend_ids=$(curl -sf "https://api.steampowered.com/ISteamUser/GetFriendList/v0001/?key=$STEAM_API_KEY&steamid=$steam_id&relationship=friend" | jq -r '.friendslist.friends[]? | .steamid' | tr '\\n' ',' | sed 's/,$//'); if [ -z "$friend_ids" ]; then printf 'Steam Friends\\nNo friends found\\n'; exit 0; fi; online=$(curl -sf "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key=$STEAM_API_KEY&steamids=$friend_ids" | jq -r '.response.players[]? | select((.personastate // 0) > 0) | .personaname' ); count=$(printf '%s\\n' "$online" | sed '/^$/d' | awk 'END {print NR}'); printf 'Steam Friends\\n'; if [ "$count" -eq 0 ]; then printf 'No friends online\\n'; exit 0; fi; printf 'Online: %s\\n' "$count"; printf '%s\\n' "$online" | head -n 3;
-lcd_logiframe_page3_cmd=if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then printf 'Token Usage\\nInstall curl and jq\\n'; exit 0; fi; today=$(date +%F); AG_USED=n/a; AG_LIMIT=n/a; if [ -n "$ANTIGRAVITY_USAGE_URL" ] && [ -n "$ANTIGRAVITY_API_KEY" ]; then ag=$(curl -sf --max-time 8 -H "Authorization: Bearer $ANTIGRAVITY_API_KEY" "$ANTIGRAVITY_USAGE_URL"); if [ -n "$ag" ]; then AG_USED=$(printf '%s' "$ag" | jq -r '.used // .tokens_used // .usage // "n/a"'); AG_LIMIT=$(printf '%s' "$ag" | jq -r '.daily_limit // .limit // "n/a"'); fi; fi; GEM_USED=n/a; GEM_LIMIT=n/a; if [ -n "$GEMINI_USAGE_URL" ] && [ -n "$GEMINI_API_KEY" ]; then gem=$(curl -sf --max-time 8 -H "x-goog-api-key: $GEMINI_API_KEY" "$GEMINI_USAGE_URL"); if [ -n "$gem" ]; then GEM_USED=$(printf '%s' "$gem" | jq -r '.used // .tokens_used // .usage // .total_tokens // "n/a"'); GEM_LIMIT=$(printf '%s' "$gem" | jq -r '.daily_limit // .limit // "n/a"'); fi; fi; CX_USED=n/a; CX_LIMIT=n/a; if [ -n "$OPENAI_API_KEY" ]; then openai_usage=$(curl -sf --max-time 8 -H "Authorization: Bearer $OPENAI_API_KEY" "https://api.openai.com/v1/dashboard/billing/usage?start_date=$today&end_date=$today"); openai_sub=$(curl -sf --max-time 8 -H "Authorization: Bearer $OPENAI_API_KEY" "https://api.openai.com/v1/dashboard/billing/subscription"); if [ -n "$openai_usage" ]; then CX_USED=$(printf '%s' "$openai_usage" | jq -r '.total_usage // .total_tokens // .usage.total_tokens // "n/a"'); fi; if [ -n "$openai_sub" ]; then CX_LIMIT=$(printf '%s' "$openai_sub" | jq -r '.hard_limit_usd // "n/a"'); fi; fi; printf 'Token Usage\\n'; printf 'Antigravity: %s/%s\\n' "$AG_USED" "$AG_LIMIT"; printf 'Gemini: %s/%s\\n' "$GEM_USED" "$GEM_LIMIT"; printf 'Codex/GPT: %s/%s\\n' "$CX_USED" "$CX_LIMIT";
-lcd_logiframe_page4_cmd=
-lcd_logiframe_page1_color=0,128,255
-lcd_logiframe_page2_color=255,153,0
-lcd_logiframe_page3_color=0,200,64
-lcd_logiframe_page4_color=255,64,64
-G1=p,k.3
-G2=p,k.4
-...
-G22=m,0,1
-```
-
-- `p,k.<linux_keycode>` = pass-through keycode
-- `m,<macro_id>,<repeat_count>` = macro sequence playback
-
-`macro-*.properties` examples use:
-
-```properties
-name=ALT-TAB
-sequence=kd.56,kd.15,d.20,ku.15,ku.56
-id=0
-```
-
-### 2) Start driver
-
-The supported way to run the driver is as a systemd **user** service, managed
-with `scripts/g13ctl`. This runs the driver as you (not root), so it reads
-`~/.g13`, and it starts again automatically at login and after a replug.
-
-Install device permissions once (needs root). This re-emits the udev `add`
-events itself, so a physical replug is usually not needed, and it reports
-whether you actually gained access:
-
-```bash
-sudo ./scripts/g13ctl udev-install
-```
-
-Install and start the service:
-
-```bash
-./scripts/g13ctl install
-```
-
-Day to day:
-
-```bash
-g13ctl start
-```
-
-```bash
-g13ctl stop
-```
-
-```bash
-g13ctl status
-```
-
-```bash
-g13ctl logs -f
-```
-
-`g13ctl status` reports the unit state, whether the G13 is attached, whether the
-USB and `uinput` nodes are writable, and which binary and bindings are in use.
-`g13ctl doctor` adds troubleshooting hints. Full command list: `g13ctl help`.
-
-#### Manual foreground run
-
-Useful for debugging; not needed if the service is installed:
-
-```bash
-sudo -E ./src/Linux-G13-Driver
-```
-
-`-E` preserves your environment so the driver reads `~/.g13` for your user.
-
-### 3) Config changes while running
-
-The driver reloads only on top-row bindings change keys (when supported by your build flow). For reliable results after edits, restart the driver.
-
-### Mode-key LEDs (M1-M4 / MR)
-
-Mode keys are controlled by the `mod` property in `bindings-*.properties`.
-
-- `mod=1` enables M1
-- `mod=2` enables M2
-- `mod=4` enables M3
-- `mod=8` enables M4
-
-You can combine values by adding them together (for example, `mod=13` lights M1, M3 and M4).
-
-Example:
-```properties
-# enable only M1 and M3
-mod=5
-```
-
-This does not control LCD color; it controls the per-mode-button background LEDs used for profile mode indicators.
-
-## Service management
-
-The service is a systemd **user** unit, `g13-driver.service`. User scope is
-deliberate: the driver reads bindings from `$HOME/.g13`, and LCD LogiFrame page
-commands run as you.
-
-### What `g13ctl install` puts where
-
-| Path | Purpose |
+| Location | Purpose |
 | --- | --- |
-| `~/.local/bin/g13ctl` | The control script itself |
-| `~/.config/systemd/user/g13-driver.service` | The unit |
-| `~/.config/g13/g13-driver.env` | Driver path and page-command environment |
-| `/etc/udev/rules.d/91-g13.rules` | Device access (installed by `udev-install`) |
+| `~/.g13/bindings-0.properties` … `bindings-3.properties` | Driver mode assignments, lighting and LCD commands. |
+| `~/.g13/macro-<id>.properties` | Existing and imported key-event macros. |
+| `~/.g13/backups/` | Backups made before applying assignments/settings. |
+| `~/.config/g13/tray.json` | Screen choices and stored service credentials. |
+| `~/.cache/g13-tray/` | Generated display text and single-instance lock. |
+| `~/.local/share/g13-tray/` | Installed Python app, keypad image and local libraries. |
+| `~/.config/g13/g13-driver.env` | Driver-service environment configuration. |
 
-`G13_DRIVER_BIN` in the env file points at your build tree, so a rebuild is
-picked up by `g13ctl restart` with no reinstall.
+The UI uses printed **G1–G22** labels; the legacy driver files use **G0–G21**. Do not renumber property keys to match the printed labels. Auxiliary identifiers also differ from Logitech XML:
 
-### Environment for LCD page commands
-
-A user service does not inherit your interactive shell, so exports in
-`.bashrc` are not visible to `lcd_logiframe_pageN_cmd`. Put anything those
-commands need into `~/.config/g13/g13-driver.env`:
-
-```ini
-STEAM_API_KEY=xxxxxxxx
-STEAM_ID=7656119xxxxxxxxxx
-OPENAI_API_KEY=sk-xxxxxxxx
-```
-
-The file is `systemd` syntax, not shell: no `export`, no `$VAR` expansion, and
-quote values containing spaces. `g13ctl install` creates it mode `0600`.
-Apply changes with `g13ctl restart`.
-
-### Behaviour
-
-- **Device not plugged in, or not writable yet:** `g13ctl run` waits and polls
-  rather than exiting, so neither an absent G13 nor a pending permission fix
-  becomes a restart loop in the journal. The reason is logged once, and the
-  driver starts on its own within a couple of seconds of the device becoming
-  usable — no `g13ctl restart` needed after a replug.
-- **Device unplugged while running:** the driver exits on the USB read error,
-  and systemd restarts the unit after `RestartSec=5`, which returns it to the
-  wait loop until you plug back in.
-- **Stop:** systemd sends `SIGTERM`; the driver clears its run flag, unwinds the
-  read loop, resets the LED and releases the USB interface.
-
-### Removing it
-
-```bash
-g13ctl uninstall
-```
-
-This stops, disables and removes the unit. The env file, `~/.local/bin/g13ctl`
-and the udev rule are left in place; delete them by hand if you want them gone.
-
-## Keymap database and atlas
-
-`data/g13-keymaps.db` is a SQLite database of published G13 keymaps collected
-from public repositories, normalised into one schema. `data/g13-keymap-atlas.html`
-is a self-contained viewer: pick a keymap from the dropdown and see each binding
-drawn on the button it belongs to.
-
-### Rebuilding
-
-```bash
-python3 tools/build_keymap_db.py <downloaded-keymaps-dir>
-```
-
-```bash
-python3 tools/build_keymap_viewer.py
-```
-
-### What is in it
-
-| Source | Format | Profiles |
+| Control | Logitech XML | Driver property |
 | --- | --- | --- |
-| `Lordbooker/linux-g13-driver` | `.properties` | 4 |
-| `ecraven/g13` | g13d `.bind` | 5 game profiles |
-| `brittyazel/g13d` | g13d `.bind` | 1 default |
-| `RunicLuke/logitech-g13` | JSON | 3 |
-| your own `~/.g13` | `.properties` | 4 |
+| Thumb left / T1 | G23 | G33 |
+| Thumb below / T2 | G24 | G34 |
+| Stick up | G26 | G36 |
+| Stick left | G29 | G37 |
+| Stick right | G27 | G38 |
+| Stick down | G28 | G39 |
 
-Three incompatible formats are mapped onto one set of canonical button labels
-(`G1`..`G22`, `M1`..`MR`, `L1`..`L4`, `STICK_UP`..`STICK_DOWN`), so the same
-button means the same thing regardless of which project a keymap came from.
+A key binding uses `p,k.<Linux keycode>`, a macro uses `m,<id>,<repeat count>`, and an empty value disables the control. For example, `G0=p,k.17` binds printed G1 to W. The importer performs numbering conversions and allocates unused local macro IDs automatically.
 
-Button geometry comes from the arrangement map in
-`src/java/com/gupta/g13/Key.java`, which is why the overlay lines up with
-`g13.gif`. Two quirks are preserved and flagged rather than silently fixed:
-
-- `Key.java` lists key code 25 twice (the under-screen `L1` and the right-hand
-  round button), so Java's `getKeyFor()` can never return the second shape. The
-  viewer draws it dashed and marks it as a duplicate.
-- Codes 36-39 carry leftover enum names (`UNDEF3`, `LIGHT`, `LIGHT2`,
-  `MISC_TOGGLE`) but are the four joystick directions in practice - the stock
-  bindings map them to W/A/D/S. They are reported as `STICK_*`.
-
-LCD page commands are deliberately **not** imported, so no shell (or anyone's
-API keys) ends up in the database.
-
-### Licensing
-
-`brittyazel/g13d` and `RunicLuke/logitech-g13` are MIT. `Lordbooker/linux-g13-driver`
-and `ecraven/g13` declare no licence, which means all rights reserved by default -
-fine to read locally, but do not redistribute those keymaps without asking.
-
-## Linux-G13-Driver display output
-
-The driver renders five lines and refreshes approximately every second:
-
-- `CPU xx% yyC` (highest CPU die/package temperature)
-- `MEM xx% NIC yyC` (active Ethernet PHY temperature when exposed by hwmon)
-- `GPU xx% yyC` (or `GPU n/a`)
-- `NET xx` (throughput in B/s / KB/s / MB/s)
-- `ROOT xx% yyC Rxx Wxx` (root filesystem, NVMe temperature and I/O)
-
-Temperature fields are omitted when the corresponding sensor is unavailable;
-other unavailable values continue to show `n/a`.
-
-## LCD source modes (stats / fifo / logiframe)
-
-The driver supports:
-
-- `lcd_mode=stats` (default): built-in live usage stats.
-- `lcd_mode=fifo` (legacy FIFO path): read lines from `lcd_path`/`lcd_fifo`.
-- `lcd_mode=logiframe`: render command output per page and switch with `G26`..`G29`.
-
-For `logiframe` mode, configure:
-
-```properties
-lcd_mode=logiframe
-lcd_logiframe_page_count=4
-lcd_logiframe_page1_cmd=...
-lcd_logiframe_page2_cmd=...
-lcd_logiframe_page3_cmd=...
-lcd_logiframe_page4_cmd=  # optional
-lcd_logiframe_page1_color=0,128,255
-lcd_logiframe_page2_color=255,153,0
-lcd_logiframe_page3_color=0,200,64
-lcd_logiframe_page4_color=255,64,64
-```
-
-Notes:
-
-- `G26` -> page 1, `G27` -> page 2, `G28` -> page 3, `G29` -> page 4.
-- If a logiframe command emits no output, fallback helper lines are shown with the property name.
-- Existing FIFO behavior remains unchanged; if FIFO is enabled and no cache is available, stats are shown.
-
-### FIFO update format
+For creating custom event sequences, the original Java macro editor remains available:
 
 ```bash
-mkdir -p /tmp
-mkfifo /tmp/g13_lcd_fifo
-echo "TITLE" >> /tmp/g13_lcd_fifo
-echo "CPU: 42%" >> /tmp/g13_lcd_fifo
-echo "MEM: 66%" >> /tmp/g13_lcd_fifo
-echo "NET: 12 MB/s" >> /tmp/g13_lcd_fifo
-echo "DSK: 55%" >> /tmp/g13_lcd_fifo
+sudo apt install ant default-jdk
+ant -f src/build.xml
 ```
 
-### Lordbooker / DBus-pluggable applet integration
+Run the generated `Linux-G13-GUI.jar` from its versioned directory under `deploy/` using `java -jar /path/to/Linux-G13-GUI.jar`. Its macros become available in the tray's selectors after reopening the app. Avoid editing the same binding files in both applications at once. See the [historical editor documentation](docs/README) for its original workflow.
 
-A pluggable DBus applet can be adapted by emitting LCD text to the configured FIFO.
-Minimal pattern:
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Scrambled lowercase text on M2–M4 | Rebuild the current source with `./build_driver.sh --force`, then restart the driver. A font-table preprocessing bug is fixed and covered by pixel-level tests. Hardware confirmation is still pending. |
+| USB access denied or no input | Run `./scripts/g13ctl doctor`, install the udev rule, replug the device and check user-service logs. |
+| No tray icon | Check desktop AppIndicator support and the Ayatana package. Launch with `/usr/bin/python3`, which has the system GTK bindings. |
+| No games in the popup | Run the importer, rerun the tray installer, then quit/reopen the tray. Saved-mode editing works without a library. |
+| Old library lacks thumb/joystick bindings | Regenerate the library with the current importer and reinstall it. Review/apply the game again; existing saved assignments are not migrated automatically. |
+| A screen says credentials are missing | Save the appropriate key/ID via Credentials, select the source, then Save & apply and refresh. Antigravity key storage alone does not provide statistics. |
+| Saved file changed externally | Reopen the app and review again before saving. |
+| Stats stop updating | Keep the tray running. If a legacy command works in a terminal only, check the user service's environment and executable paths. |
+
+## Development and verification
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-FIFO="${LCD_FIFO:-/tmp/g13_lcd_fifo}"
+/usr/bin/python3 -m unittest discover -s tests -v
+./tests/run-driver-tests.sh
 
-# Replace this block with your DBus subscriber/formatter logic.
-render_lcd() {
-  {
-    printf '%s\n' "${1:-jgtans}"
-    printf '%s\n' "${2:-status}"
-    printf '%s\n' "${3:-active}"
-    printf '%s\n' "${4:-$(date +%H:%M:%S)}"
-    printf '%s\n' "${5:- }"
-  } > "$FIFO"
-}
+# Requires a graphical session and the imported game library.
+# Always isolate HOME: this test deliberately writes bindings/credentials.
+test_home=$(mktemp -d /tmp/g13-ui-check-XXXXXX)
+HOME="$test_home" /usr/bin/python3 tests/check_tray_ui.py
 
-# Example static render
-render_lcd "jgtans" "applet" "connected" "$(date +%H:%M:%S)" "  "
+# Recreate the documentation screenshots with disposable settings.
+/usr/bin/python3 tools/capture_tray_screenshots.py
 ```
 
-If your applet updates frequently, rewrite only changed lines and keep writes non-blocking.
+Python tests cover providers, secret redaction, conversion, auxiliary controls, mode isolation, backup conflicts and rollback. C++ tests use USB stubs to check font pixels, mode switching and input press/release behaviour; their simulated device-open error is expected. The GTK check exercises routing, review cancellation/application, control labels, auxiliary assignments and credential save/remove. Screenshot capture uses its own temporary HOME and never applies assignments or restarts the real driver.
 
-For copy-pasteable producer scripts, see:
-- `scripts/lcd-fifo-writer.sh`
-- `scripts/lcd-fifo-writer-dbus.sh`
+These checks do not replace verification of physical LCD readability, colours and device input, or authenticated service access. Outstanding checks are tracked in [TODO.md](TODO.md).
 
-## One-command installation of DBus FIFO service
+Main components: [`src/cpp/`](src/cpp/) contains the driver; [`app/`](app/) contains the GTK UI, configuration and statistics providers; [`tools/import_game_profiles.py`](tools/import_game_profiles.py) converts the upstream library; [`scripts/`](scripts/) contains installation and service helpers.
 
-After cloning the repo, run from the repository root:
+## Credits
 
-```bash
-./scripts/install-lcd-fifo-writer-dbus-service.sh
-```
-
-The installer copies:
-
-- `scripts/lcd-fifo-writer-dbus.sh` -> `~/.local/bin/lcd-fifo-writer-dbus.sh`
-- `scripts/lcd-fifo-writer-dbus.env.example` -> `~/.config/g13/lcd-fifo-writer-dbus.env`
-- `scripts/lcd-fifo-writer-dbus.service` -> `~/.config/systemd/user/g13-lcd-fifo-writer-dbus.service`
-
-It also sets `SCRIPT_PATH` in the env file and enables/runs the user service.
-
-Optional:
-- `--dry-run`: print planned actions without writing files or touching systemd.
-- `--no-enable`: install files only and skip auto-start.
-- `--help`: show options.
-
-
-### Quick verification
-
-After install, run:
-
-```bash
-systemctl --user status --no-pager g13-lcd-fifo-writer-dbus.service
-journalctl --user -u g13-lcd-fifo-writer-dbus.service -f
-```
+This fork builds on the original Linux G13 project and its Java configuration tool. Game maps come from [cheshire137/logitech-g13-profiles](https://github.com/cheshire137/logitech-g13-profiles); auxiliary numbering was cross-checked against [neoresin/g13xml2keybinds](https://github.com/neoresin/g13xml2keybinds/blob/master/translate.GButton2Direction.list). Preserve upstream attribution and consult the respective projects' terms before redistributing their data.

@@ -7,6 +7,13 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 }
 install -d "$HOME/.local/share/g13-tray" "$HOME/.local/share/applications" "$HOME/.config/autostart"
 install -m 644 "$root"/app/g13_*.py "$HOME/.local/share/g13-tray/"
+install -m 644 "$root/src/java/com/gupta/g13/images/g13.gif" "$HOME/.local/share/g13-tray/"
+if [[ -f "$root/data/g13-keymaps.json" ]]; then
+  install -m 600 "$root/data/g13-keymaps.json" "$HOME/.local/share/g13-tray/"
+fi
+if [[ -f "$root/data/g13-games.json" ]]; then
+  install -m 600 "$root/data/g13-games.json" "$HOME/.local/share/g13-tray/"
+fi
 /usr/bin/python3 - <<'PY'
 from pathlib import Path
 home = Path.home()

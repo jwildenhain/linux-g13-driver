@@ -1,34 +1,72 @@
-# G13 Control follow-up
+# G13 Control implementation checklist
 
-Status: AWAITING USER APPROVAL (requested 2026-09-08).
-Do not implement these changes until the user approves this plan.
+Approved on 2026-09-08. Implementation and automated checks are complete.
 
-- [ ] Diagnose scrambled characters on M2–M4. Inspect cached text, command parsing,
-      font indexing and LCD rendering; reproduce with deterministic ASCII fixtures.
-      Preserve M1's working system stats. Verify page switching and display clearing.
-- [ ] Add a tray-menu item, “Configure G13 buttons…”, that opens a popup showing
-      the physical G13 layout with clickable buttons and current assignments.
-      Reuse the existing button geometry/image and keymap atlas assets where useful.
-- [ ] Add a searchable existing-profile selector using the local keymap collection
-      (`data/g13-keymaps.db` / JSON and `tools/build_keymap_db.py`). Show source,
-      assignments, and unsupported mappings before importing. Resolve zero-based
-      property indices versus printed G1–G22 labels. Do not silently drop macros.
-- [ ] Allow editing and saving assignments to M1, M2, M3, or M4/MR. Back up settings
-      before applying; preserve M1 system stats and each target's screen/colour.
-      Keep physical mode buttons reserved for selecting the four modes.
-- [ ] Add credential menu items for Steam, Discord, OpenAI organisation admin and
-      Claude organisation admin keys. Each opens a masked dialog with save/remove
-      and a read-only connection check. Keep credentials out of Git and logs.
-      Explain required IDs/permissions and API-versus-subscription usage clearly.
-      Keep Antigravity's local text-file setup until a supported API is verified.
-- [ ] Verify popup interactions, profile import/conversion, per-mode saves, secret
-      redaction and deterministic LCD output. Perform a physical-device check of
-      M2–M4 readability with the user before declaring the display issue resolved.
+- [x] Fix scrambled lowercase text on M2–M4. A trailing backslash in a font-table
+      comment removed the next glyph row during preprocessing. Add a compile-time
+      table-size check and pixel-level rendering/clearing regression tests.
+- [x] Add a clickable G13 keypad popup with G1–G22 assignment editing.
+- [x] Add searchable local profiles and saved-mode copying, with previews and
+      explicit notes for unsupported assignments.
+- [x] Save selected assignments to M1–M4 with backups, preserving screen content,
+      lighting, joystick assignments and other modes.
+- [x] Add masked Steam, Discord, OpenAI and Claude credential dialogs with
+      save/remove and read-only connection checks.
+- [x] Add masked Antigravity key storage; leave connection checks disabled until
+      a supported usage endpoint is verified.
+- [x] Import all 73 XML files from cheshire137/logitech-g13-profiles as 79 mode
+      profiles. Include the empty Age of Empires III profile with an explanation.
+- [x] Test XML conversion, symbolic keys, combinations, macros, target-mode
+      isolation, credential storage and real GTK interactions.
 
-Approval requested: approve the plan above, or specify changes.
+## Remaining verification and limitations
 
-## Current checkpoint: 1.1.0
+- [ ] User confirms M2–M4 readability and backlight behaviour on the physical G13.
+- [ ] Verify authenticated stats with user-provided service credentials.
+- [ ] Connect Antigravity usage only if a supported endpoint becomes available.
 
-The tray app, mode profiles and integration providers are implemented. M1 looks
-correct according to the user; M2–M4 show scrambled characters on their device.
-The follow-up fixes and popup/profile-import UI are not part of this checkpoint.
+Unsupported imported actions retain their target assignments and are reported in
+the popup. The generated game datasets remain local; the importer and installation
+instructions are tracked so another checkout can obtain the same collection.
+
+## Git checkpoint
+
+The pushed 1.1.0 checkpoint is commit `00afdf8`. Version 1.2.0 contains the
+font fix, grouped keypad editor, complete game import, credential dialogs and
+configurable rolling system statistics. See [the changelog](CHANGELOG.md) and [usage guide](docs/TRAY.md).
+
+## Grouped assignment redesign
+
+- [x] Audit source-mode groupings and exact/partial assignment matches.
+- [x] Group games, with independent M1–M4/Skip destinations for each source mode.
+- [x] Preview current and proposed assignments and show source duplicate details.
+- [x] Review and apply multiple modes with one backup and rollback on write failure.
+- [x] Verify single-mode, three-mode, destination-conflict, review cancel/apply,
+      duplicate-classification, preflight and rollback paths.
+
+Audit findings: [PROFILE_AUDIT.md](docs/PROFILE_AUDIT.md).
+
+## Assignment labels and auxiliary controls
+
+- [x] Switch the G13 drawing between physical labels and assigned keys/macros.
+- [x] Add joystick direction controls plus left/below thumb buttons.
+- [x] Save all six per mode; disclose keyboard-mode activation for directions.
+- [x] Verify label switching, imports, persistence and driver press/release events.
+
+## Auxiliary import review and documentation
+
+- [x] Audit every game for joystick/thumb assignments and document the per-game results.
+- [x] Translate XML auxiliary identifiers and PERIOD; verify all 285 assignments.
+- [x] Add regression coverage for source-to-driver auxiliary numbering.
+- [x] Rewrite README with actual UI screenshots and complete functionality/setup guidance.
+
+## M1 statistics and 1.2.0 verification
+
+- [x] Add GPU VRAM percentage, active logical threads and PSU total power.
+- [x] Move NIC temperature to NET and alternate ROOT read/write speeds.
+- [x] Add configurable sample interval and rolling average (defaults: 1s / 5s).
+- [x] Validate average expiry, missing readings, GPU CSV, active-thread threshold,
+      PSU units, disk alternation and cached frames with driver regression tests.
+- [x] Pass all 21 Python tests and the isolated GTK interaction check.
+- [x] Refresh README screenshots and include Steam API-key setup instructions.
+- [x] Synchronise VERSION and Java build metadata at 1.2.0.
