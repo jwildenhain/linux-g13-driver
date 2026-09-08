@@ -1,4 +1,5 @@
 """Configuration shared by the tray and its tests; no desktop dependencies."""
+import copy
 import json
 import os
 from pathlib import Path
@@ -80,6 +81,18 @@ class Config:
         self.data.setdefault('stats_poll_seconds', 1)
         self.data.setdefault('stats_average_seconds', 5)
         self.data['screens'][0]['source'] = 'System stats'
+        if 'screen_pages' not in self.data:
+            existing = copy.deepcopy(self.data['screens'])
+            for page, screen in enumerate(existing):
+                if screen['source'] == 'Keep existing command':
+                    screen['command'] = self.raw[0].get(f'lcd_logiframe_page{page+1}_cmd', '')
+            self.data['screen_pages'] = [existing] + [
+                [{'source':'Custom text', 'color':existing[mode]['color'],
+                  'text':f'M{mode+1} / L{page+1}', 'file':''} for page in range(4)]
+                for mode in range(1,4)]
+        self.data['screen_pages'][0][0]['source'] = 'System stats'
+        self.data['screens'] = [pages[0] for pages in self.data['screen_pages']]
+
 
     def save(self, keymaps):
         for key in ('stats_poll_seconds', 'stats_average_seconds'):
@@ -97,29 +110,35 @@ class Config:
             p = self.bindings / f'bindings-{i}.properties'
             if (p.read_bytes() if p.exists() else None) != self.original[i]:
                 raise ValueError('Bindings changed outside this app. Close and reopen before saving.')
-        for screen in self.data['screens']:
+        if len(self.data['screen_pages']) != 4 or any(len(pages) != 4 for pages in self.data['screen_pages']):
+            raise ValueError('Each mode requires four screens.')
+        for screen in [screen for pages in self.data['screen_pages'] for screen in pages]:
+            if screen['source'] not in SOURCES: raise ValueError('Unknown screen source.')
             rgb = screen['color'].split(',')
             if len(rgb) != 3 or not all(x.isdigit() and 0 <= int(x) <= 255 for x in rgb):
                 raise ValueError('Invalid RGB colour')
         stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         backup = self.bindings / 'backups' / stamp
         backup.mkdir(parents=True, exist_ok=True)
-        changes = {'mode_profiles': '1', 'lcd_mode': 'logiframe', 'lcd_logiframe_page_count': '4', 'lcd_logiframe_page1_cmd': ''}
+        changes = {'mode_profiles':'1', 'mode_screens':'1', 'lcd_mode':'logiframe', 'lcd_logiframe_page_count':'4'}
         changes.update({key: str(self.data[key]) for key in ('stats_poll_seconds', 'stats_average_seconds')})
-        for i, screen in enumerate(self.data['screens']):
-            changes[f'lcd_logiframe_page{i+1}_color'] = screen['color']
-            if i and screen['source'] != 'Keep existing command':
-                changes[f'lcd_logiframe_page{i+1}_cmd'] = 'cat -- ' + shlex.quote(str(self.cache / f'page-{i}.txt'))
-        # Existing page commands are in profile zero in the legacy page mode.
-        for i in range(1,4):
-            if self.data['screens'][i]['source'] == 'Keep existing command':
-                key = f'lcd_logiframe_page{i+1}_cmd'
-                changes[key] = self.raw[0].get(key, '')
+        self.data['screen_pages'][0][0]['source'] = 'System stats'
+        self.data['screens'] = [pages[0] for pages in self.data['screen_pages']]
         for i, mapping in enumerate(keymaps):
             path = self.bindings / f'bindings-{i}.properties'
             if path.exists():
                 shutil.copy2(path, backup / path.name)
             patch = dict(changes, **mapping, mod=str(1 << i))
+            for page, screen in enumerate(self.data['screen_pages'][i]):
+                prefix = f'lcd_logiframe_page{page+1}'
+                patch[prefix + '_color'] = screen['color']
+                patch[prefix + '_stats'] = '1' if screen['source'] == 'System stats' else '0'
+                if screen['source'] == 'System stats': command = ''
+                elif screen['source'] == 'Keep existing command':
+                    command = screen.get('command', self.raw[i].get(prefix + '_cmd', ''))
+                else: command = 'cat -- ' + shlex.quote(str(self.cache / f'page-{i}-{page}.txt'))
+                patch[prefix + '_cmd'] = command
+
             # Empty bindings explicitly disable a key in the driver's parser.
             patch.update({k: 'none' for k, v in mapping.items() if not v})
             update_properties(path, patch)

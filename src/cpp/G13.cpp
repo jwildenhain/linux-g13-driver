@@ -440,6 +440,9 @@ void G13::start() {
         return;
     }
 
+    ifstream brightness_file((string(getenv("HOME")) + "/.g13/brightness").c_str());
+    double saved_brightness;
+    if ((brightness_file >> saved_brightness) && saved_brightness >= 0 && saved_brightness <= 100) brightness = saved_brightness;
     loadBindings();
 
     keepGoing = 1;
@@ -452,6 +455,7 @@ void G13::start() {
             // spinning on the same error. The service supervisor restarts us.
             break;
         }
+        update_brightness(chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count());
         time_t now = time(NULL);
         if ((now - this->last_lcd_update) >= 1) {
             render_lcd();
@@ -541,6 +545,8 @@ void G13::loadBindings() {
     this->logiframe_page_count = 4;
     this->logiframe_page = 0;
     this->mode_profiles = false;
+    mode_screens = false;
+    for (int i = 0; i < 4; i++) page_stats[i] = i == 0;
     stats_poll_seconds = 1;
     stats_average_seconds = 5;
     stats_average.clear();
@@ -574,6 +580,15 @@ void G13::loadBindings() {
                       if (poll) stats_poll_seconds = seconds;
                       else stats_average_seconds = seconds;
                   }
+              }
+              else if (strcmp(key, "mode_screens") == 0) {
+                  char *value = strtok(NULL, " ,\n");
+                  mode_screens = value && strcmp(value, "1") == 0;
+              }
+              else if (strlen(key) == 25 && strncmp(key, "lcd_logiframe_page", 18) == 0 && key[18] >= '1' && key[18] <= '4' && strcmp(key + 19, "_stats") == 0) {
+                  int page = key[18] - '1';
+                  char *value = strtok(NULL, " ,\n");
+                  page_stats[page] = value && strcmp(value, "1") == 0;
               }
               else if (strcmp(key, "mode_profiles") == 0) {
                   char *value = strtok(NULL, " ,\n");
@@ -859,16 +874,17 @@ void G13::loadBindings() {
       } // finish reading all properties before closing the file
       file.close();
       if (this->mode_profiles && this->lcd_source == LCD_SOURCE_LOGIFRAME) {
-          set_logiframe_page(this->bindings);
+          set_logiframe_page(mode_screens ? selected_pages[this->bindings] : this->bindings);
       }
 }
 
 void G13::setColor(int red, int green, int blue) {
     int error;
     unsigned char usb_data[] = { 5, 0, 0, 0, 0 };
-    usb_data[1] = red;
-    usb_data[2] = green;
-    usb_data[3] = blue;
+    backlight_base[0] = red; backlight_base[1] = green; backlight_base[2] = blue;
+    usb_data[1] = static_cast<unsigned char>(red * brightness / 100.0 + 0.5);
+    usb_data[2] = static_cast<unsigned char>(green * brightness / 100.0 + 0.5);
+    usb_data[3] = static_cast<unsigned char>(blue * brightness / 100.0 + 0.5);
 
     error = libusb_control_transfer(handle, LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE, 9, 0x307, 0,
             usb_data, 5, 1000);
@@ -877,6 +893,34 @@ void G13::setColor(int red, int green, int blue) {
         cerr << "Problem sending data" << endl;
     }
 
+}
+
+void G13::update_brightness(double now) {
+    if (!brightness_held || now < brightness_started + 0.4) return;
+    double start = brightness_updated > brightness_started + 0.4 ? brightness_updated : brightness_started + 0.4;
+    double remaining = (now - start) * 20.0; // Five seconds from minimum to maximum.
+    if (remaining <= 0) return;
+    while (remaining > 0) {
+        double distance = brightness_direction > 0 ? 100 - brightness : brightness;
+        double step = remaining < distance ? remaining : distance;
+        brightness += brightness_direction * step;
+        remaining -= step;
+        if (step >= distance) brightness_direction = -brightness_direction;
+    }
+    brightness_updated = now;
+    setColor(backlight_base[0], backlight_base[1], backlight_base[2]);
+}
+
+void G13::save_brightness() {
+    string path = string(getenv("HOME")) + "/.g13/brightness";
+    string temporary = path + ".tmp";
+    ofstream file(temporary.c_str());
+    if (!file.is_open()) return;
+    file << brightness << "\n";
+    file.close();
+    if (file.fail()) { unlink(temporary.c_str()); return; }
+    chmod(temporary.c_str(), 0600);
+    if (rename(temporary.c_str(), path.c_str()) != 0) unlink(temporary.c_str());
 }
 
 void G13::set_lcd_source(const string &mode, const string &path) {
@@ -1668,7 +1712,7 @@ void G13::render_stats_to_lcd() {
 int G13::read() {
     unsigned char buffer[G13_REPORT_SIZE];
     int size;
-    int error = libusb_interrupt_transfer(handle, LIBUSB_ENDPOINT_IN | G13_KEY_ENDPOINT, buffer, G13_REPORT_SIZE, &size, 1000);
+    int error = libusb_interrupt_transfer(handle, LIBUSB_ENDPOINT_IN | G13_KEY_ENDPOINT, buffer, G13_REPORT_SIZE, &size, brightness_held ? 25 : 1000);
     if (error && error != LIBUSB_ERROR_TIMEOUT) {
         std::map<int, std::string> errors;
         errors[LIBUSB_SUCCESS] = "LIBUSB_SUCCESS";
@@ -1762,18 +1806,33 @@ void G13::parse_key(int key, unsigned char *byte) {
 
     int pressed = actual_byte & mask;
 
-    // Physical M1/M2/M3/MR and LCD buttons select matching profiles.
-    // Opt-in keeps legacy bindings intact. Edge detection prevents reloads
-    // on every USB report while a selector is held.
+    if (mode_profiles && key == G13_KEY_BD) {
+        double now = chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count();
+        if (pressed && !brightness_held) {
+            brightness_held = true;
+            brightness_started = brightness_updated = now;
+            brightness_direction = brightness >= 100 ? -1 : 1;
+        } else if (!pressed && brightness_held) {
+            update_brightness(now);
+            brightness_held = false;
+            save_brightness();
+        }
+        return;
+    }
+    // Mode selectors change bindings; independent LCD selectors change pages.
     if (this->mode_profiles && key >= 25 && key <= 32) {
         const int slot = key - 25;
         const bool down = pressed != 0;
         const bool rising = down && !this->mode_key_down[slot];
         this->mode_key_down[slot] = down;
         if (rising) {
-            const int next = key >= 29 ? key - 29 : key - 25;
-            this->bindings = next;
-            loadBindings();
+            if (mode_screens && key < 29) {
+                set_logiframe_page(key - 25);
+            } else {
+                const int next = key >= 29 ? key - 29 : key - 25;
+                this->bindings = next;
+                loadBindings();
+            }
         }
         return;
     }

@@ -10,6 +10,23 @@ from g13_config import Config, properties, validate_binding
 from g13_providers import render, api_usage, steam, codex_local
 
 class ConfigTests(unittest.TestCase):
+    def test_four_screens_per_mode_migrate_and_save_independently(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = Config(d)
+            self.assertEqual([len(pages) for pages in c.data['screen_pages']], [4]*4)
+            self.assertEqual(c.data['screen_pages'][0][0]['source'], 'System stats')
+            self.assertEqual(c.data['screen_pages'][0][1]['source'], 'Keep existing command')
+            self.assertEqual(c.data['screen_pages'][1][0]['source'], 'Custom text')
+            c.data['screen_pages'][2][3].update(source='Custom text', text='M3 fourth screen', color='1,2,3')
+            c.save([{} for _ in range(4)])
+            saved = properties(c.bindings / 'bindings-2.properties')
+            self.assertEqual(saved['mode_screens'], '1')
+            self.assertEqual(saved['lcd_logiframe_page4_color'], '1,2,3')
+            self.assertIn('page-2-3.txt', saved['lcd_logiframe_page4_cmd'])
+            self.assertEqual(saved['lcd_logiframe_page4_stats'], '0')
+            self.assertEqual(properties(c.bindings / 'bindings-0.properties')['lcd_logiframe_page1_stats'], '1')
+            self.assertEqual(Config(d).data['screen_pages'][2][3]['text'], 'M3 fourth screen')
+
     def test_stats_timing_validation_and_persistence(self):
         with tempfile.TemporaryDirectory() as d:
             c = Config(d)
@@ -44,7 +61,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(loaded['lcd_logiframe_page1_cmd'], '')
             self.assertEqual(loaded['mode_profiles'], '1')
             self.assertIn('# keep comment', p.read_text())
-            self.assertEqual(properties(p.parent/'bindings-1.properties')['lcd_logiframe_page2_cmd'], 'echo existing')
+            self.assertEqual(properties(p.parent/'bindings-0.properties')['lcd_logiframe_page2_cmd'], 'echo existing')
             self.assertEqual(c.path.stat().st_mode & 0o777, 0o600)
             p.write_text(p.read_text()+'G9=p,k.4\n')
             with self.assertRaisesRegex(ValueError, 'outside'): c.save(maps)

@@ -91,8 +91,7 @@ available for live verification during development.
 
 ## Profiles and keys
 
-Each tab controls one profile, its backlight colour, screen source, and G1–G22
-bindings. Choose a Linux key or an existing macro from the dropdown. The macro
+Each M tab controls one key profile and has L1–L4 sub-tabs for four independent screen sources and colours, alongside its G1–G22 bindings. Choose a Linux key or an existing macro from the dropdown. The macro
 list reads `~/.g13/macro-*.properties`; create new macros in the repository's Java
 macro editor. Disabled entries produce no input.
 
@@ -102,12 +101,12 @@ editor after the window opened cause a save conflict; reopen the app to reload.
 Secrets are stored in `~/.config/g13/tray.json` with permissions `0600`.
 Backups are in `~/.g13/backups/<timestamp>/`.
 
-Saving enables `mode_profiles=1` in all four binding files:
+Saving enables `mode_profiles=1` and `mode_screens=1` in all four binding files:
 
 - Physical M1/M2/M3/MR select profiles 0–3; MR is M4 in the app.
-- LCD buttons L1–L4 select the same profiles.
-- M1 always renders the existing built-in system stats.
-- The mode LED and LCD backlight follow the selected profile.
+- LCD buttons L1–L4 select four screens within the current M profile; assignments and mode LEDs stay unchanged.
+- M1/L1 always renders system stats; other screens may also select System stats.
+- The mode LED follows the M profile; the backlight colour follows its selected L screen.
 - G1 on the physical keypad is `G0` in the legacy properties format. The app
   performs this conversion; do not rename property keys to match printed labels.
 
@@ -125,7 +124,7 @@ currently the last cache remains on the display until the tray starts again.
 
 | Screen | Data | Setup / limitation |
 | --- | --- | --- |
-| System stats | Existing CPU, memory, GPU, network, disk and sensor display | Fixed on M1 |
+| System stats | Existing CPU, memory, GPU, network, disk and sensor display | Fixed on M1/L1; optional elsewhere |
 | Steam | Online friend count and up to three names | Steam Web API key and SteamID64; private friend lists may deny access |
 | Discord | Server name, approximate members and online count | Bot token and server ID; bot must belong to the server. Does not read personal DMs or automate a user account |
 | Codex local | Input/output counters from the most recently modified local session | No key. Reads token events in the last 2 MB of session JSONL; local schema is best effort. Not account-wide quota or billing |
@@ -221,3 +220,9 @@ available. The key is not sent to another provider or an unverified endpoint.
 ## M1 rolling averages and disk activity
 
 M1 now alternates a single `R<speed>` / `W<speed>` after ROOT percentage and temperature. All M1 numbers use a rolling average (five seconds by default). Set **Sample every (seconds)** and **Rolling average (seconds)** on M1, then Save & apply. Both range from 1–60 seconds; the window must be at least the sampling interval. Sampling defaults to one second. THR becomes the rounded mean of sampled active-thread counts. Missing readings remain `n/a`; the window refills after a mode change. API refresh remains 60 seconds.
+
+## Four screens per mode and brightness
+
+Each M tab now contains L1–L4 screen tabs. The four existing screens migrate to M1/L1–L4; other modes begin as editable custom-text labels. Save & apply enables the new layout. The driver remembers each mode’s selected screen until restart. The round left LCD button (BD) adjusts global brightness: hold for 0.4 seconds, then sweep up/down at 20 percentage points per second. Release to keep the level, saved to `~/.g13/brightness`. Screen colours retain their hue while scaling with this brightness. The right round button retains its hardware backlight toggle.
+
+For the existing four-provider setup, M1/L1–L4 show System stats, Steam, Codex local and Discord respectively. The M2–M4 key profiles remain independent; their screen sets can be configured separately.

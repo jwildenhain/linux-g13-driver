@@ -12,6 +12,9 @@ if __name__ == '__main__':
         from gi.repository import Gtk, GLib
         from g13_dialogs import credentials_dialog
         try:
+            assert len(tray.page_controls) == 4 and all(len(pages) == 4 for pages in tray.page_controls)
+            assert not tray.page_controls[0][0][0].get_sensitive()
+            assert tray.page_controls[0][1][0].get_sensitive()
             assert tray.stats_poll_seconds.get_value_as_int() == 1
             assert tray.stats_average_seconds.get_value_as_int() == 5
             config.save([{k:c.get_active_id() for k,c in mapping.items()} for mapping in tray.keymaps])
@@ -103,6 +106,13 @@ if __name__ == '__main__':
             buttons['Remove'].clicked()
             assert config.data['credentials']['ANTIGRAVITY_API_KEY']==''
             dialog.destroy()
+            source, _, text, _ = tray.page_controls[2][3]
+            source.set_active(7) # Custom text
+            text.set_text('Fourth screen')
+            tray.save()
+            assert config.data['screen_pages'][2][3]['text'] == 'Fourth screen'
+            assert properties(config.bindings/'bindings-2.properties')['mode_screens'] == '1'
+            assert 'page-2-3.txt' in properties(config.bindings/'bindings-2.properties')['lcd_logiframe_page4_cmd']
             print('GTK interaction checks passed: profile selection, key edit, target saves, credential save/remove.')
         except Exception:
             failures.append(traceback.format_exc())

@@ -2,18 +2,18 @@
 
 A Linux userspace driver and native desktop tray app for the **Logitech G13**. Configure game keys, macros, joystick directions, four mode profiles, backlight colours and LCD statistics from your desktop panel.
 
-**M1 keeps the built-in system statistics.** M2, M3 and M4 can display service statistics or your own text. The physical **MR** button selects M4.
+**Each M mode has four LCD screens. M1/L1 keeps the built-in system statistics.** Other screens can display service statistics, system stats or your own text. The physical **MR** button selects M4.
 
 ![G13 Control showing a game with three independently routed source modes](docs/screenshots/game-modes.png)
 
 *Actual GTK screenshots taken with disposable sample settings. They show the configuration app; they are not photographs of the hardware or authenticated service results.*
 
-**Version 1.2.0** includes the LCD font fix, game-profile library, expanded configuration UI and configurable M1 rolling statistics. See the [changelog](CHANGELOG.md) and [remaining verification](TODO.md).
+**Version 1.3.0** adds independent M-mode/L-screen selection and hold-to-adjust brightness, alongside the game-profile library and rolling system statistics. See the [changelog](CHANGELOG.md) and [remaining verification](TODO.md).
 
 ## What you can do
 
 - Keep G13 Control in the panel notification area; closing its window leaves it running.
-- Configure **M1–M4**, each with its own key assignments and RGB backlight colour.
+- Configure **M1–M4**, each with its own key assignments and four independently configured LCD screens/colours.
 - Edit **G1–G22**, the two thumb buttons, and four joystick directions in a clickable G13 view.
 - Switch the drawing between physical button labels and proposed key/macro assignments.
 - Browse a searchable game library, route several source modes to different M slots together, or apply a single mode to any slot.
@@ -51,7 +51,7 @@ Replug the G13 if device permissions have not taken effect. Run the tray as your
 ### First setup
 
 1. Open **G13 settings** from the panel's **G13** menu.
-2. Leave M1 on **System stats**. Select a screen source and colour for M2–M4. New configurations initially use **Keep existing command** for those screens; choose a source if you do not have legacy commands.
+2. In each M tab, use the **L1–L4** tabs to choose four screen sources and colours. M1/L1 stays on **System stats**. The four existing screens migrate to M1/L1–L4; M2–M4 start with labelled custom-text pages.
 3. Use **Credentials** in the tray menu to add any required service keys or IDs.
 4. Click **Save & apply** in settings. This creates/updates the four binding files, enables mode-profile switching and restarts the driver.
 5. Open **Configure G13 buttons…** to choose game assignments or edit the saved modes.
@@ -60,18 +60,35 @@ Replug the G13 if device permissions have not taken effect. Run the tray as your
 
 ## Modes, screens and colours
 
-| App slot | Physical mode button | Alternate LCD selector | Binding file |
+| App slot | Physical mode button | Screens within this mode | Binding file |
 | --- | --- | --- | --- |
-| M1 | M1 | L1 | `~/.g13/bindings-0.properties` |
-| M2 | M2 | L2 | `~/.g13/bindings-1.properties` |
-| M3 | M3 | L3 | `~/.g13/bindings-2.properties` |
-| M4 | MR | L4 | `~/.g13/bindings-3.properties` |
+| M1 | M1 | L1–L4 | `~/.g13/bindings-0.properties` |
+| M2 | M2 | L1–L4 | `~/.g13/bindings-1.properties` |
+| M3 | M3 | L1–L4 | `~/.g13/bindings-2.properties` |
+| M4 | MR | L1–L4 | `~/.g13/bindings-3.properties` |
 
-Saving settings enables `mode_profiles=1`. Switching a mode loads its bindings, selects its LCD page and updates the mode indicator and backlight. Held inputs are released before changing bindings. MR is reserved for M4 selection in this mode.
+**M1–M4 select key-assignment modes; the four rectangular LCD buttons select screens within the current mode.** This provides 16 configurable screen slots. LCD selection keeps the current key assignments and M indicator unchanged. Each mode remembers its last selected screen during the driver session; after restart it starts on L1.
 
-M1 retains the existing CPU, memory, GPU, network, disk and sensor display. Available measurements depend on the machine. The LCD itself is monochrome, **160 × 43 pixels**; the colour selector changes the shared backlight, not individual text or key colours.
+Saving settings enables `mode_profiles=1` and `mode_screens=1`. Older configuration files retain the linked-button behaviour until migrated with **Save & apply**. The four existing sources and colours move to M1/L1–L4; other modes start with editable labels. Held inputs are released before switching M modes. MR selects M4.
 
-Without `mode_profiles`, the driver retains its legacy page-selection behaviour. Use the tray's **Save & apply** to opt into the four-mode workflow.
+M1/L1 retains system statistics; **System stats** can also be selected on other screens. The M1 sampling controls apply to every system-statistics page. The LCD is monochrome, **160 × 43 pixels**; each page's colour changes the shared backlight, not individual pixels or keys.
+
+For the existing System / Steam / Codex / Discord setup, the migrated M1 screens are:
+
+| M1 screen button | Content |
+| --- | --- |
+| L1 | System statistics |
+| L2 | Steam |
+| L3 | Codex local |
+| L4 | Discord |
+
+This preserves existing screen choices; new installations still need their preferred sources and any required credentials configured. M2–M4 keep their key bindings and have separate editable screen sets.
+
+### Hold-to-adjust brightness
+
+Hold the **round left button beside the four LCD buttons** (BD). After a 0.4-second delay, brightness rises toward 100%, then falls toward 0%, repeating until you release it. A full minimum-to-maximum sweep takes five seconds; starting at maximum moves downward immediately. Each new hold starts upward unless already at maximum.
+
+Release to keep the level. Brightness scales the selected screen's RGB colour globally, survives mode/page changes and is saved in `~/.g13/brightness` for driver restarts. The round right button retains the device's existing backlight on/off behaviour. Hardware feel and button identification still need confirmation on the physical device.
 
 ### M1 layout
 
@@ -90,7 +107,7 @@ On the **M1** settings tab, **Sample every (seconds)** controls how often hardwa
 
 Every M1 measurement is averaged over the valid samples in that window, including percentages, temperatures, active-thread counts, PSU watts and network/disk rates. Integer readings are rounded; THR is the rounded average of each sample's active-thread count. Missing readings show `n/a` and clear that metric's previous samples. On startup or after changing modes the window fills with new samples. A window equal to the sampling interval gives effectively unsmoothed readings.
 
-Read/write alternation happens on each new M1 sample. These settings affect M1 only; service/API refresh remains 60 seconds. Driver properties are `stats_poll_seconds` and `stats_average_seconds` in each mode's binding file. Changing polling does not change USB input polling.
+Read/write alternation happens on each new M1 sample. These settings affect system-statistics pages only; service/API refresh remains 60 seconds. Driver properties are `stats_poll_seconds` and `stats_average_seconds` in each mode's binding file. Changing polling does not change USB input polling.
 
 ### M1 GPU memory
 
@@ -177,7 +194,7 @@ The tray fetches provider data in a background thread every **60 seconds** and w
 
 | Screen source | What it displays | Requirements and scope |
 | --- | --- | --- |
-| System stats | Built-in machine statistics | Fixed on M1; measurements depend on available hardware/sensors. |
+| System stats | Built-in machine statistics | Fixed on M1/L1 and optional elsewhere; measurements depend on available hardware/sensors. |
 | Steam | Online friend count and up to three names | Steam Web API key and SteamID64; friend-list privacy affects access. |
 | Discord | Server name, approximate member and online counts | Bot token and server ID; the bot must belong to that server. |
 | Codex local | Input/output counters from the latest modified local session | No key; reads recent session token events. Not account-wide billing or remaining subscription quota. |
@@ -235,6 +252,7 @@ To disable tray login autostart, remove `~/.config/autostart/g13-control.desktop
 | --- | --- |
 | `~/.g13/bindings-0.properties` … `bindings-3.properties` | Driver mode assignments, lighting and LCD commands. |
 | `~/.g13/macro-<id>.properties` | Existing and imported key-event macros. |
+| `~/.g13/brightness` | Global backlight level saved when the brightness button is released. |
 | `~/.g13/backups/` | Backups made before applying assignments/settings. |
 | `~/.config/g13/tray.json` | Screen choices and stored service credentials. |
 | `~/.cache/g13-tray/` | Generated display text and single-instance lock. |

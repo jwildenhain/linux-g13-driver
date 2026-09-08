@@ -70,3 +70,17 @@ Audit findings: [PROFILE_AUDIT.md](docs/PROFILE_AUDIT.md).
 - [x] Pass all 21 Python tests and the isolated GTK interaction check.
 - [x] Refresh README screenshots and include Steam API-key setup instructions.
 - [x] Synchronise VERSION and Java build metadata at 1.2.0.
+
+## Independent LCD screens and brightness
+
+- [x] Add four screen slots per M mode with independent source/colour settings.
+- [x] Migrate the four existing screens to M1/L1–L4 and retain mode assignments.
+- [x] Separate LCD selectors from mode selectors and remember the selected page.
+- [x] Add hold-to-sweep brightness and persistent release level.
+- [ ] Confirm BD button identification, sweep feel and right-button toggle on hardware.
+
+## 1.3.0 checkpoint
+
+- [x] Document independent M/L selection, existing-screen migration to M1 and saved brightness.
+- [x] Update the settings screenshot for the L1–L4 tabs.
+- [x] Synchronise VERSION and Java build metadata at 1.3.0.

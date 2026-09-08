@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 — 2026-09-08
+
+- Assign the four existing screens to M1/L1–L4, independently of M2–M4 key modes.
+- Separate M key modes from LCD selectors: four configurable screens per mode,
+  per-screen colours, remembered screen selection and migration of existing screens.
+- Add hold-to-sweep brightness on the round left LCD button, saved on release.
+- Validate screen migration, per-mode page selection, brightness sweep/persistence,
+  and the sixteen-screen GTK editor. Refresh documentation and screenshots.
+
 ## 1.2.0 — 2026-09-08
 
 - Alternate ROOT read/write speeds and average every M1 metric over a configurable

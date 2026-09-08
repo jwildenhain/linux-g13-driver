@@ -40,12 +40,13 @@ def main(on_ready=None):
             title = Gtk.Label(xalign=0)
             title.set_markup('<big><b>G13 Control</b></big>  •  Profiles, lighting and live screens')
             box.pack_start(title, False, False, 0)
-            note = Gtk.Label(label='M1 keeps your system stats. M4 uses the MR button. Closing this window keeps the tray running.', xalign=0)
+            note = Gtk.Label(label='M buttons select key modes; L1–L4 select screens within each mode. M1/L1 keeps system stats. M4 uses MR.', xalign=0)
             note.set_line_wrap(True)
             box.pack_start(note, False, False, 0)
             notebook = Gtk.Notebook()
             box.pack_start(notebook, True, True, 0)
             self.controls = []
+            self.page_controls = []
             self.keymaps = []
             for i in range(4):
                 page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=12)
@@ -59,35 +60,43 @@ def main(on_ready=None):
                         setattr(self, name, spinner)
                         setting_row.pack_start(spinner, False, False, 0)
                         page.pack_start(setting_row, False, False, 0)
-                screen = config.data['screens'][i]
-                row = Gtk.Box(spacing=10)
-                source = Gtk.ComboBoxText()
-                choices = SOURCES if i == 0 else SOURCES[1:]
-                for item in choices: source.append_text(item)
-                source.set_active(choices.index(screen['source']))
-                source.set_sensitive(i != 0)
-                row.pack_start(Gtk.Label(label='Screen'), False, False, 0)
-                row.pack_start(source, True, True, 0)
-                color = Gtk.ColorButton()
-                rgba = Gdk.RGBA()
-                rgba.red, rgba.green, rgba.blue = [int(v)/255 for v in screen['color'].split(',')]
-                rgba.alpha = 1
-                color.set_rgba(rgba)
-                color.set_title(f'M{i+1} backlight colour')
-                row.pack_start(color, False, False, 0)
-                page.pack_start(row, False, False, 0)
-                text = Gtk.Entry(text=screen.get('text','').replace('\n', ' | '))
-                text.set_placeholder_text('Custom screen: separate up to five lines with |')
-                file = Gtk.Entry(text=screen.get('file',''))
-                file.set_placeholder_text('Path to Antigravity / other tool text export')
-                page.pack_start(text, False, False, 0)
-                page.pack_start(file, False, False, 0)
-                def source_changed(combo, text=text, file=file):
-                    text.set_sensitive(combo.get_active_text() == 'Custom text')
-                    file.set_sensitive(combo.get_active_text() == 'Antigravity / text file')
-                source.connect('changed', source_changed)
-                source_changed(source)
-                self.controls.append((source, color, text, file))
+                screen_tabs = Gtk.Notebook()
+                page.pack_start(screen_tabs, False, False, 0)
+                mode_controls = []
+                for screen_index in range(4):
+                    screen_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
+                    screen_tabs.append_page(screen_box, Gtk.Label(label=f'L{screen_index+1}'))
+                    screen = config.data['screen_pages'][i][screen_index]
+                    row = Gtk.Box(spacing=10)
+                    source = Gtk.ComboBoxText()
+                    choices = SOURCES
+                    for item in choices: source.append_text(item)
+                    source.set_active(choices.index(screen['source']))
+                    source.set_sensitive(not (i == 0 and screen_index == 0))
+                    row.pack_start(Gtk.Label(label='Screen'), False, False, 0)
+                    row.pack_start(source, True, True, 0)
+                    color = Gtk.ColorButton()
+                    rgba = Gdk.RGBA()
+                    rgba.red, rgba.green, rgba.blue = [int(v)/255 for v in screen['color'].split(',')]
+                    rgba.alpha = 1
+                    color.set_rgba(rgba)
+                    color.set_title(f'M{i+1} / L{screen_index+1} backlight colour')
+                    row.pack_start(color, False, False, 0)
+                    screen_box.pack_start(row, False, False, 0)
+                    text = Gtk.Entry(text=screen.get('text','').replace('\n', ' | '))
+                    text.set_placeholder_text('Custom screen: separate up to five lines with |')
+                    file = Gtk.Entry(text=screen.get('file',''))
+                    file.set_placeholder_text('Path to Antigravity / other tool text export')
+                    screen_box.pack_start(text, False, False, 0)
+                    screen_box.pack_start(file, False, False, 0)
+                    def source_changed(combo, text=text, file=file):
+                        text.set_sensitive(combo.get_active_text() == 'Custom text')
+                        file.set_sensitive(combo.get_active_text() == 'Antigravity / text file')
+                    source.connect('changed', source_changed)
+                    source_changed(source)
+                    mode_controls.append((source, color, text, file))
+                self.page_controls.append(mode_controls)
+                self.controls.append(mode_controls[0])
                 page.pack_start(Gtk.Label(label='G-key bindings  ·  choose a key, existing macro, or disable', xalign=0), False, False, 0)
                 scroll = Gtk.ScrolledWindow()
                 scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -134,7 +143,14 @@ def main(on_ready=None):
                 self.credentials[name] = entry
             self.preview = Gtk.Label(label='Save & apply to activate screen changes.', xalign=0, selectable=True)
             self.preview.set_line_wrap(True)
-            connections.pack_start(self.preview, True, True, 0)
+            preview_scroll = Gtk.ScrolledWindow()
+            preview_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            preview_scroll.set_min_content_height(80)
+            preview_scroll.add(self.preview)
+            connections.pack_start(preview_scroll, True, True, 0)
+            brightness_note = Gtk.Label(label='Hold the round left LCD button to sweep brightness up/down; release to keep it.', xalign=0)
+            brightness_note.set_line_wrap(True)
+            box.pack_start(brightness_note, False, False, 0)
             self.status = Gtk.Label(label='Ready · Existing settings are preserved until you save.', xalign=0)
             self.status.set_line_wrap(True)
             box.pack_start(self.status, False, False, 0)
@@ -203,18 +219,21 @@ def main(on_ready=None):
 
         def save(self, *_):
             try:
-                for i, (source, color, text, file) in enumerate(self.controls):
-                    rgba = color.get_rgba()
-                    config.data['screens'][i] = {'source':source.get_active_text(), 'color':','.join(str(round(v*255)) for v in [rgba.red,rgba.green,rgba.blue]), 'text':text.get_text().replace('|','\n'), 'file':file.get_text()}
+                for i, mode_controls in enumerate(self.page_controls):
+                    for page, (source, color, text, file) in enumerate(mode_controls):
+                        rgba = color.get_rgba()
+                        old = config.data['screen_pages'][i][page]
+                        config.data['screen_pages'][i][page] = dict(old, source=source.get_active_text(), color=','.join(str(round(v*255)) for v in [rgba.red,rgba.green,rgba.blue]), text=text.get_text().replace('|','\n'), file=file.get_text())
                 config.data['stats_poll_seconds'] = self.stats_poll_seconds.get_value_as_int()
                 config.data['stats_average_seconds'] = self.stats_average_seconds.get_value_as_int()
                 config.data['credentials'] = {name:entry.get_text().strip() for name,entry in self.credentials.items()}
                 backup = config.save([{key:combo.get_active_id() for key,combo in mapping.items()} for mapping in self.keymaps])
                 self.active_data = copy.deepcopy(config.data)
                 # Provide an immediate valid display, even before network results.
-                for i, screen in enumerate(self.active_data['screens'][1:], 1):
-                    if screen['source'] != 'Keep existing command':
-                        atomic_write(config.cache / f'page-{i}.txt', screen['source'] + '\nRefreshing...\n')
+                for i, pages in enumerate(self.active_data['screen_pages']):
+                    for page, screen in enumerate(pages):
+                        if screen['source'] not in ('Keep existing command', 'System stats'):
+                            atomic_write(config.cache / f'page-{i}-{page}.txt', screen['source'] + '\nRefreshing...\n')
                 self.status.set_text('Saved. Backup: ' + str(backup))
                 self.refresh()
                 self.service('restart')
@@ -228,12 +247,18 @@ def main(on_ready=None):
             def work():
                 previews = []
                 try:
-                    for i, screen in enumerate(snapshot['screens'][1:], 1):
-                        if screen['source'] == 'Keep existing command': continue
-                        result = render(screen, snapshot['credentials'])
-                        if snapshot == self.active_data:
-                            atomic_write(config.cache / f'page-{i}.txt', result)
-                        previews.append(f'M{i+1}: ' + result.replace('\n', '  ').strip())
+                    rendered = {}
+                    for i, pages in enumerate(snapshot['screen_pages']):
+                        for page, screen in enumerate(pages):
+                            if screen['source'] in ('Keep existing command', 'System stats'): continue
+                            identity = (screen['source'], screen.get('text',''), screen.get('file',''))
+                            if identity not in rendered: rendered[identity] = render(screen, snapshot['credentials'])
+                            result = rendered[identity]
+                            if snapshot == self.active_data:
+                                atomic_write(config.cache / f'page-{i}-{page}.txt', result)
+                                # Keep 1.2.0 cache paths alive until Save & apply migrates the driver.
+                                if page == 0 and i: atomic_write(config.cache / f'page-{i}.txt', result)
+                            previews.append(f'M{i+1}/L{page+1}: ' + result.replace('\n', '  ').strip())
                     GLib.idle_add(self.preview.set_text, '\n\n'.join(previews) or 'Existing commands are managed by the driver.')
                 finally:
                     self.busy = False

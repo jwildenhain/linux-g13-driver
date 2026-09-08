@@ -36,6 +36,17 @@ private:
     int                   lcd_source;
     bool                  has_lcd_cache;
     bool                  mode_profiles;
+    bool mode_screens = false;
+    bool page_stats[4] = {true, false, false, false};
+    int selected_pages[4] = {0, 0, 0, 0};
+    double brightness = 100;
+    bool brightness_held = false;
+    double brightness_started = 0;
+    double brightness_updated = 0;
+    int brightness_direction = 1;
+    int backlight_base[3] = {128, 128, 128};
+    void update_brightness(double now);
+    void save_brightness();
     bool                  mode_key_down[8];
     int                   logiframe_page;
     int                   logiframe_page_count;

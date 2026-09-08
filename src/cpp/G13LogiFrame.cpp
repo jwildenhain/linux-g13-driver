@@ -32,7 +32,7 @@ static void strip_cr(std::string *line) {
 
 void G13::set_logiframe_page_leds() {
     const int leds[4] = {1, 2, 4, 8};
-    const int page = this->logiframe_page;
+    const int page = mode_screens && mode_profiles ? bindings : this->logiframe_page;
     const int max_page = this->logiframe_page_count - 1;
 
     if (max_page < 0) {
@@ -63,6 +63,7 @@ void G13::set_logiframe_page(int page) {
         this->logiframe_page = page;
     }
 
+    if (mode_screens && mode_profiles) selected_pages[bindings] = logiframe_page;
     set_logiframe_page_leds();
     apply_logiframe_page_color();
     render_logiframe_page();
@@ -272,6 +273,11 @@ bool G13::render_logiframe_usage_page() {
 void G13::render_logiframe_page() {
     set_logiframe_page_leds();
 
+    if (mode_screens) {
+        if (page_stats[logiframe_page]) render_logiframe_usage_page();
+        else render_logiframe_page_with_command(logiframe_page, "M" + to_string(bindings + 1) + " / L" + to_string(logiframe_page + 1));
+        return;
+    }
     if (this->logiframe_page == 0) {
         render_logiframe_usage_page();
         return;

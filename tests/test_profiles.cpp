@@ -172,6 +172,40 @@ int main() {
     memset(report,0,sizeof(report)); driver.parse_key(32,report);
     report[29/8] |= 1 << (29%8); driver.parse_key(29,report);
     assert(driver.bindings==0 && driver.logiframe_page==0);
+    for (int i = 0; i < 4; i++) {
+        std::ofstream extra(base + "/bindings-" + std::to_string(i) + ".properties", std::ios::app);
+        extra << "mode_screens=1\nlcd_logiframe_page1_stats=0\nlcd_logiframe_page4_stats=1\n";
+    }
+    driver.loadBindings();
+    assert(driver.mode_screens && !driver.page_stats[0] && driver.page_stats[3]);
+    memset(report, 0, sizeof(report)); driver.parse_key(29, report);
+    report[26/8] |= 1 << (26%8); // L2 changes screen only.
+    action = driver.actions[0];
+    driver.parse_key(26, report);
+    assert(driver.bindings == 0 && driver.logiframe_page == 1 && driver.actions[0] == action);
+    memset(report, 0, sizeof(report)); driver.parse_key(26, report);
+    report[30/8] |= 1 << (30%8); driver.parse_key(30, report);
+    assert(driver.bindings == 1 && driver.logiframe_page == 0);
+    memset(report, 0, sizeof(report)); driver.parse_key(30, report);
+    report[29/8] |= 1 << (29%8); driver.parse_key(29, report);
+    assert(driver.bindings == 0 && driver.logiframe_page == 1); // Recall each mode's screen.
+
+    driver.brightness = 50;
+    driver.brightness_held = true;
+    driver.brightness_started = driver.brightness_updated = 0;
+    driver.brightness_direction = 1;
+    driver.update_brightness(0.2); assert(std::abs(driver.brightness - 50) < 0.0001); // Ignore short taps.
+    driver.update_brightness(2.9); assert(std::abs(driver.brightness - 100) < 0.0001);
+    driver.update_brightness(5.4); assert(std::abs(driver.brightness - 50) < 0.0001);
+    driver.update_brightness(7.9); assert(std::abs(driver.brightness - 0) < 0.0001);
+    driver.update_brightness(10.4); assert(std::abs(driver.brightness - 50) < 0.0001);
+    driver.brightness_held = false;
+    driver.update_brightness(12.9); assert(std::abs(driver.brightness - 50) < 0.0001);
+    driver.save_brightness();
+    double brightness_saved = -1;
+    std::ifstream(base + "/brightness") >> brightness_saved;
+    assert(brightness_saved == 50);
+
     for(int i=0;i<4;i++) std::remove((base+"/bindings-"+std::to_string(i)+".properties").c_str());
     rmdir(base.c_str());rmdir(directory);
 }
