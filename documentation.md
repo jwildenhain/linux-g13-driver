@@ -182,6 +182,26 @@ offsets these by `0x80` to `0x81`/`0x82`, and the module accepts both.
 Brightness keys switch the sensor off first: with it active the monitor
 overrides a manual change within seconds, which makes the keys appear broken.
 
+### Not polling a sleeping display
+
+Background rendering never touches the bus while the display is asleep: a DDC
+read can wake this panel, so a page refreshing on a timer would hold the
+monitor awake or bounce it between sleeping and waking. The page then shows a
+static "not polling while asleep" message instead of three empty bars, which
+would misreport the monitor as sitting at zero.
+
+Deliberate key presses are still delivered -- only automatic polling is
+suppressed, so the keys stay responsive.
+
+Sleep state comes from `xset q`, not `/sys/class/drm/*/dpms`: under the nvidia
+proprietary driver the sysfs property reports `Off` while the display is plainly
+awake, because modesetting does not go through DRM there.
+
+This matters beyond tidiness. A monitor-control utility polling DDC/CI can
+destabilise a link running near its bandwidth limit -- on a 6K 120Hz panel the
+observed symptom was a continuous sleep/wake cycle that stopped only when
+DDC/CI was switched off in the OSD.
+
 ### Shared bus access
 
 DDC/CI writes take around 50ms and concurrent access can wedge a panel until it

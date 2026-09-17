@@ -11,6 +11,9 @@
 - `g13-ddc install-keys` writes the GNOME custom keybindings and prints the
   matching binding lines, using keysyms that exist in the default X keymap.
 - Honour `G13_DDCUTIL` for ddcutil builds that are not on `PATH`.
+- Never poll DDC while the display is asleep, since a read can wake the
+  panel; render a static page instead. Sleep state comes from `xset q`,
+  as the DRM sysfs `dpms` property is unreliable under the nvidia driver.
 
 ## 1.3.0 — 2026-09-08
 

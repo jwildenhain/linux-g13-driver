@@ -205,8 +205,15 @@ class Backend:
         return self._display
 
 
-def read_state(backend=None):
-    """Return {code: (value, max)} for the bar features plus the sensor."""
+def read_state(backend=None, allow_asleep=False):
+    """Return {code: (value, max)} for the bar features plus the sensor.
+
+    Returns {} when the display is asleep unless `allow_asleep` is set. A DDC
+    read can wake this panel, so a page refreshing on a timer would otherwise
+    hold the monitor awake, or bounce it between sleeping and waking.
+    """
+    if not allow_asleep and asleep():
+        return {}
     backend = backend or Backend()
     state = {}
     for code in [c for _, c in BARS] + [SENSOR]:
@@ -232,6 +239,9 @@ def text_lines(state=None, display=None):
         except NoDisplay:
             return ['DDC monitor', 'No DDC/CI display found',
                     'Check ddcutil detect', 'and i2c group membership']
+        if not state:
+            return ['DDC monitor', f'Display {display_state().lower()}',
+                    'Not polling while asleep']
     width = 14
     lines = []
     for label, code in BARS:
@@ -256,6 +266,19 @@ def render_pbm(state=None, display=None, width=160, height=43):
     if state is None:
         backend = Backend()
         state, display = read_state(backend), backend.display
+    if not state:
+        # Nothing was read (asleep, or unreachable). Draw a static page rather
+        # than three empty bars, which would misreport the monitor as at zero.
+        img = Image.new('1', (width, height), 0)
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.load_default()
+        draw.text((0, 8), f'Display {display_state().lower()}', fill=1,
+                  font=font)
+        draw.text((0, 22), 'not polling while asleep', fill=1, font=font)
+        px = img.load()
+        rows = [' '.join('1' if px[x, y] else '0' for x in range(width))
+                for y in range(height)]
+        return f'P1\n{width} {height}\n' + '\n'.join(rows) + '\n'
 
     img = Image.new('1', (width, height), 0)
     draw = ImageDraw.Draw(img)
@@ -284,6 +307,28 @@ def render_pbm(state=None, display=None, width=160, height=43):
     rows = [' '.join('1' if px[x, y] else '0' for x in range(width))
             for y in range(height)]
     return f'P1\n{width} {height}\n' + '\n'.join(rows) + '\n'
+
+
+def display_state():
+    """Return 'On', 'Off', 'Standby', 'Suspend' or 'Unknown'.
+
+    Uses `xset q`, not /sys/class/drm/*/dpms: under the nvidia proprietary
+    driver the sysfs property reports Off while the display is plainly awake,
+    because modesetting does not go through DRM there.
+    """
+    out = _run(['xset', 'q'], timeout=5) or ''
+    for line in out.splitlines():
+        low = line.strip().lower()
+        if low.startswith('monitor is'):
+            word = low.replace('monitor is', '').strip().strip('.')
+            if word.startswith('in '):
+                word = word[3:]
+            return word.capitalize() or 'Unknown'
+    return 'Unknown'
+
+
+def asleep():
+    return display_state() not in ('On', 'Unknown')
 
 
 def _x(args):
