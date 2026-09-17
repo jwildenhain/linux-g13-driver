@@ -80,3 +80,110 @@ Changes are saved back to the active profile (`bindings-0..3`).
    - Enable Steam Input and map keys to actions in a game profile.
 5. If G13 is not detected, restart Steam after driver starts and reconnect/reload USB.
 6. Keep the LCD source stable while testing (`stats` or FIFO path) to avoid repeated process churn.
+
+## DDC monitor module
+
+Optional module controlling a DDC/CI monitor from the G13: an LCD page with
+live bars for brightness, contrast and volume, and keys that adjust them.
+Inactive when no DDC/CI display is present — `g13-ddc` exits 3 and the tray
+source renders an explanatory page, so nothing breaks on machines without one.
+
+Files: `app/g13_ddc.py` (module), `scripts/g13-ddc` (CLI).
+
+Requires `ddcutil` and membership of the `i2c` group. If ddcutil is a local
+build not on `PATH`, set `G13_DDCUTIL` in `~/.config/g13/g13-driver.env` so the
+driver's page commands inherit it.
+
+### LCD page
+
+Two paths, with different limits:
+
+- **Graphical bars.** `g13-ddc page` emits a 160x43 ASCII PBM. Wire it as
+  `lcd_logiframe_pageN_cmd`, selecting the `Keep existing command` screen
+  source in the tray so a save does not overwrite it. Note the driver's PBM
+  parser reads one whitespace-separated token per pixel, so pixels must be
+  emitted spaced; packed rows are consumed as a single pixel and the page falls
+  back to raw text.
+- **Text bars.** Screen source `DDC monitor` goes through the normal tray
+  provider pipeline, which sanitises to ASCII and caps at 26 columns by 5 rows,
+  so bars are drawn with `#` and `-`.
+
+### Keys
+
+Bindings support only `p` (keycode) and `m` (macro) — there is no shell-command
+action — so each key emits a keycode that a desktop hotkey turns into a
+`g13-ddc key` call. `g13-ddc install-keys` writes the GNOME custom keybindings
+and prints the matching `bindings-<mode>.properties` lines; `--dry-run` shows
+both without changing anything.
+
+| Device key | File key | Linux keycode | X keysym | Action |
+| --- | --- | --- | --- | --- |
+| G1  | `G0`  | 148 | `XF86Launch1` | wake the panel |
+| G2  | `G1`  | 184 | `XF86Launch5` | brightness +5 |
+| G9  | `G8`  | 185 | `XF86Launch6` | brightness -5 |
+| G3  | `G2`  | 186 | `XF86Launch7` | contrast +5 |
+| G10 | `G9`  | 187 | `XF86Launch8` | contrast -5 |
+| G4  | `G3`  | 149 | `XF86Launch2` | volume +5 |
+| G11 | `G10` | 202 | `XF86Launch3` | volume -5 |
+| G8  | `G7`  | 203 | `XF86Launch4` | auto-brightness toggle |
+| G15 | `G14` | 188 | `XF86Launch9` | switch input to `0x19` |
+| G16 | `G15` | 204 | `XF86LaunchB` | switch input to `0x0F` |
+
+Two traps worth knowing:
+
+- **Binding keys are zero-indexed.** The key labelled G1 on the device is `G0`
+  in the properties file (`INPUT_LABELS` in `app/g13_config.py`).
+- **GNOME matches accelerators by keysym, not keycode.** F13-F20 look like the
+  natural choice and fail silently: on a default X keymap those keycodes carry
+  `XF86Tools`, `XF86Launch5-9` and `XF86AudioMicMute`, and one has no symbol at
+  all. Check a candidate with `xmodmap -pke | awk '$2 == <keycode + 8>'`, and
+  see what a key really emits with
+  `xinput test $(xinput list --id-only G13)`.
+
+### Waking a sleeping display
+
+`g13-ddc key wake` restores the output *before* touching DDC, and the order is
+the point. A blanked display usually means the graphics driver dropped the
+link; on DisplayPort the DDC/CI AUX channel goes with it, so a `VCP D6 = 01`
+power-on cannot be delivered while the panel is asleep. The action therefore
+runs `xset dpms force on` first, then sends the VCP write, and reports which
+steps succeeded.
+
+`g13-ddc key wake-hard` additionally cycles each connected output off and on
+with `xrandr`, forcing link retraining for a panel that stays asleep even once
+the signal returns. It retries the restore three times per output and reports a
+failure rather than leaving an output off silently.
+
+### Switching inputs
+
+`g13-ddc key input <value>` selects a source, e.g. `input 0x19`. Values are
+monitor-specific and often mislabelled by ddcutil -- verify by switching and
+looking, rather than trusting the name.
+
+Switching is reversible over DDC: the panel keeps answering on the AUX channel
+while displaying another source, so a second `input` command switches back.
+**But if the monitor's USB hub follows the display input (a built-in KVM, common
+on Dell USB-C panels), every device on that hub moves to the other machine** --
+keyboard, mouse, webcam, USB audio and the monitor's own ethernet port.
+
+Whether the switch-back key still works depends on where the G13 is plugged in.
+Check with `lsusb -t`: a G13 hanging directly off a root hub keeps talking to
+this machine and its keys keep working, while one behind the monitor's hub
+travels with everything else and its keys will be delivered to the wrong
+computer. In that case use the monitor's buttons, or a DDC tool on the machine
+the hub moved to.
+
+### Auto-brightness
+
+`g13-ddc key auto` toggles the monitor's own ambient light sensor (VCP `0x66`)
+rather than implementing a schedule. Standard MCCS uses `0x01`/`0x02`; Dell
+offsets these by `0x80` to `0x81`/`0x82`, and the module accepts both.
+
+Brightness keys switch the sensor off first: with it active the monitor
+overrides a manual change within seconds, which makes the keys appear broken.
+
+### Shared bus access
+
+DDC/CI writes take around 50ms and concurrent access can wedge a panel until it
+is power cycled. If a `ddcmond` session daemon owns the bus the module routes
+through it over D-Bus; otherwise it calls `ddcutil` directly.

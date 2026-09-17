@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Add an optional DDC/CI monitor module (`app/g13_ddc.py`, `scripts/g13-ddc`):
+  an LCD page with live brightness, contrast and volume bars, and keys for
+  wake, brightness, contrast, volume and auto-brightness. Inactive with a clear
+  message when no DDC/CI display is present.
+- Add a `DDC monitor` screen source for text bars through the tray pipeline;
+  graphical bars use `g13-ddc page` via `Keep existing command`.
+- `g13-ddc install-keys` writes the GNOME custom keybindings and prints the
+  matching binding lines, using keysyms that exist in the default X keymap.
+- Honour `G13_DDCUTIL` for ddcutil builds that are not on `PATH`.
+
 ## 1.3.0 — 2026-09-08
 
 - Assign the four existing screens to M1/L1–L4, independently of M2–M4 key modes.

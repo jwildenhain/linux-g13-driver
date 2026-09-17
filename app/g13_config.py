@@ -9,7 +9,7 @@ import shutil
 import tempfile
 from datetime import datetime
 
-SOURCES = ['System stats', 'Steam', 'Discord', 'Codex local', 'OpenAI API', 'Claude API', 'Antigravity / text file', 'Custom text', 'Keep existing command']
+SOURCES = ['System stats', 'Steam', 'Discord', 'Codex local', 'OpenAI API', 'Claude API', 'Antigravity / text file', 'DDC monitor', 'Custom text', 'Keep existing command']
 DEFAULT_CODES = [3,4,5,6,7,8,9,16,17,18,19,20,21,22,30,31,32,33,34,44,45,46]
 INPUT_LABELS = {f'G{i}': f'G{i+1}' for i in range(22)}
 INPUT_LABELS.update({'G33':'Thumb left', 'G34':'Thumb below', 'G36':'Stick up',

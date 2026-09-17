@@ -114,6 +114,9 @@ def render(screen, credentials):
                 with p.open() as f:
                     lines = f.read(4096).splitlines()[:4]
                 lines += [f'File age: {int((time.time()-p.stat().st_mtime)/60)}m']
+        elif source == 'DDC monitor':
+            import g13_ddc
+            lines = g13_ddc.text_lines()
         elif source == 'Custom text': lines = screen['text'].splitlines()
         else: lines = [source]
     except HTTPError as e:

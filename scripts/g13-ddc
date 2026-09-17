@@ -1,0 +1,157 @@
+#!/usr/bin/python3
+"""g13-ddc - DDC/CI monitor control for the G13.
+
+  g13-ddc detect                 show the detected display (refreshes cache)
+  g13-ddc page                   160x43 ASCII PBM for lcd_logiframe_pageN_cmd
+  g13-ddc text                   ASCII bars, five lines, for FIFO or testing
+  g13-ddc key <action> [delta]   wake | auto | brightness | contrast | volume
+  g13-ddc install-keys [--dry-run]
+                                 bind the G13 keys through GNOME custom
+                                 keybindings (see documentation.md)
+
+Exits 3 when no DDC/CI display is present, so callers can stay quiet on
+machines without one.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+# Run from a checkout or from the installed tray directory.
+for candidate in (Path(__file__).resolve().parent.parent/'app',
+                  Path.home()/'.local'/'share'/'g13-tray'):
+    if (candidate/'g13_ddc.py').is_file():
+        sys.path.insert(0, str(candidate))
+        break
+
+import g13_ddc                                            # noqa: E402
+
+# device key, file key, Linux keycode, X keysym, action
+KEYMAP = [
+    ('G1',  'G0',  148, 'XF86Launch1', 'wake'),
+    ('G2',  'G1',  184, 'XF86Launch5', 'brightness +5'),
+    ('G9',  'G8',  185, 'XF86Launch6', 'brightness -5'),
+    ('G3',  'G2',  186, 'XF86Launch7', 'contrast +5'),
+    ('G10', 'G9',  187, 'XF86Launch8', 'contrast -5'),
+    ('G4',  'G3',  149, 'XF86Launch2', 'volume +5'),
+    ('G11', 'G10', 202, 'XF86Launch3', 'volume -5'),
+    ('G8',  'G7',  203, 'XF86Launch4', 'auto toggle'),
+    ('G15', 'G14', 188, 'XF86Launch9', 'input 0x19'),   # Mac (Thunderbolt)
+    ('G16', 'G15', 204, 'XF86LaunchB', 'input 0x0F'),   # this PC (DisplayPort)
+]
+
+
+def install_keys(dry_run=False):
+    """Write GNOME custom keybindings for the actions above.
+
+    The driver can only emit keycodes (bindings support `p` and `m`, not shell
+    commands), so a desktop hotkey turns each keycode into a g13-ddc call.
+
+    Keysyms, not keycodes: GNOME matches accelerators by keysym. F13-F20 are
+    the obvious choice and silently fail on many systems, where those keycodes
+    carry XF86Tools / XF86Launch5-9 / XF86AudioMicMute or no symbol at all.
+    The XF86Launch* symbols used here exist in the default X keymap and are
+    absent from ordinary keyboards. Check with:
+        xmodmap -pke | awk '$2 == <linux keycode + 8>'
+    """
+    import subprocess
+
+    binary = str(Path(__file__).resolve())
+    prefix = ('/org/gnome/settings-daemon/plugins/media-keys/'
+              'custom-keybindings')
+    paths = [f'{prefix}/custom{i}/' for i in range(len(KEYMAP))]
+
+    lines = ['[/]', 'custom-keybindings=[' +
+             ', '.join(f"'{p}'" for p in paths) + ']']
+    for i, (label, _, _, keysym, action) in enumerate(KEYMAP):
+        lines += [f'\n[custom-keybindings/custom{i}]',
+                  f"name='Monitor {action} ({label})'",
+                  f"command='{binary} key {action}'",
+                  f"binding='{keysym}'"]
+    keyfile = '\n'.join(lines) + '\n'
+
+    if dry_run:
+        sys.stdout.write(keyfile)
+        print('\n# bindings for ~/.g13/bindings-<mode>.properties:',
+              file=sys.stderr)
+        for label, fkey, code, keysym, action in KEYMAP:
+            print(f'# {label:<4} {fkey}=p,k.{code}   ({keysym}) -> {action}',
+                  file=sys.stderr)
+        return 0
+
+    proc = subprocess.run(
+        ['dconf', 'load',
+         '/org/gnome/settings-daemon/plugins/media-keys/'],
+        input=keyfile, text=True)
+    if proc.returncode != 0:
+        print('g13-ddc: dconf load failed', file=sys.stderr)
+        return 1
+
+    print(f'installed {len(KEYMAP)} keybindings')
+    print('Now set these in ~/.g13/bindings-<mode>.properties '
+          '(mode 1 is M2) and restart the driver:')
+    for label, fkey, code, _, action in KEYMAP:
+        print(f'  {fkey}=p,k.{code}    # {label} -> {action}')
+    return 0
+
+
+def main(argv):
+    if len(argv) < 2:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    cmd = argv[1]
+
+    if cmd == 'install-keys':
+        return install_keys('--dry-run' in argv)
+
+    if cmd == 'detect':
+        display = g13_ddc.detect(refresh=True)
+        if not display:
+            print('no DDC/CI display detected', file=sys.stderr)
+            return 3
+        print(f"{display['model']}  serial {display['serial']}  "
+              f"(bus {display.get('bus', '?')} at detection)")
+        return 0
+
+    try:
+        if cmd == 'page':
+            sys.stdout.write(g13_ddc.render_pbm())
+            return 0
+        if cmd == 'text':
+            print('\n'.join(g13_ddc.text_lines()))
+            return 0
+        if cmd == 'key':
+            if len(argv) < 3:
+                print('g13-ddc: key needs an action', file=sys.stderr)
+                return 2
+            action = argv[2]
+            delta = 5
+            # base 0 so input values can be written as 0x19
+            if len(argv) > 3:
+                try:
+                    delta = int(argv[3], 0)
+                except ValueError:
+                    pass
+            elif ' ' in action:
+                action, _, rest = action.partition(' ')
+                try:
+                    delta = int(rest, 0)
+                except ValueError:
+                    pass
+            result = g13_ddc.act(action, delta)
+            g13_ddc.log_action(f'{action} {delta} -> {result}')
+            print(result)
+            return 0
+    except g13_ddc.NoDisplay as err:
+        print(f'g13-ddc: {err}', file=sys.stderr)
+        return 3
+    except Exception as err:
+        print(f'g13-ddc: {err}', file=sys.stderr)
+        return 1
+
+    print(f'g13-ddc: unknown command {cmd!r}', file=sys.stderr)
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
