@@ -115,7 +115,18 @@ def main(argv):
 
     try:
         if cmd == 'page':
-            sys.stdout.write(g13_ddc.render_pbm())
+            # Never let timer-driven refreshes stack on a slow or wedged bus.
+            with g13_ddc.single_flight() as lock:
+                if not lock.acquired:
+                    stale = g13_ddc.cached_page()
+                    if stale:
+                        sys.stdout.write(stale)
+                        return 0
+                    print('DDC monitor\nbusy')
+                    return 0
+                page = g13_ddc.render_pbm()
+                g13_ddc.store_page(page)
+                sys.stdout.write(page)
             return 0
         if cmd == 'text':
             print('\n'.join(g13_ddc.text_lines()))

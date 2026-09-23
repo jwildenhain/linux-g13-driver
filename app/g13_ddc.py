@@ -230,6 +230,77 @@ def _percent(got):
     return 0 if maximum <= 0 else max(0, min(100, round(value * 100 / maximum)))
 
 
+def single_flight(timeout=0):
+    """Lock so only one DDC reader runs at a time, per user.
+
+    The LCD page command is invoked on a timer. When a read is slower than the
+    refresh interval -- which it is whenever the monitor is unresponsive, since
+    ddcutil then waits out its own flock on /dev/i2c-* -- invocations stack up
+    and every one of them fails waiting for the bus. Acquire without blocking
+    and let the loser reuse the last rendered page instead of joining the pile.
+    """
+    import fcntl
+
+    class _Lock:
+        def __init__(self):
+            self.acquired = False
+            self._fh = None
+
+        def __enter__(self):
+            try:
+                CACHE.mkdir(parents=True, exist_ok=True)
+                self._fh = (CACHE/'ddc.lock').open('w')
+                fcntl.flock(self._fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.acquired = True
+            except (OSError, BlockingIOError):
+                self.acquired = False
+            return self
+
+        def __exit__(self, *exc):
+            if self._fh:
+                try:
+                    fcntl.flock(self._fh, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                self._fh.close()
+            return False
+
+    return _Lock()
+
+
+PAGE_CACHE = CACHE/'page.pbm'
+
+
+def cached_page():
+    """Last successfully rendered page, or None."""
+    try:
+        return PAGE_CACHE.read_text() or None
+    except OSError:
+        return None
+
+
+def store_page(text):
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        PAGE_CACHE.write_text(text)
+    except OSError:
+        pass
+
+
+def _why_empty():
+    """Explain an empty read honestly.
+
+    Reporting everything as "asleep" hid a real fault: the monitor had stopped
+    answering DDC/CI entirely while still serving its EDID, which looks nothing
+    like sleep and needs a different fix (DDC/CI is usually switched off in the
+    monitor's own menu).
+    """
+    state = display_state()
+    if state not in ('On', 'Unknown'):
+        return [f'Display {state.lower()}', 'Not polling while asleep']
+    return ['No DDC/CI response', 'Check Others > DDC/CI', 'in the monitor menu']
+
+
 def text_lines(state=None, display=None):
     """ASCII bars for the tray pipeline (26 columns, 5 rows maximum)."""
     if state is None:
@@ -240,8 +311,7 @@ def text_lines(state=None, display=None):
             return ['DDC monitor', 'No DDC/CI display found',
                     'Check ddcutil detect', 'and i2c group membership']
         if not state:
-            return ['DDC monitor', f'Display {display_state().lower()}',
-                    'Not polling while asleep']
+            return ['DDC monitor'] + _why_empty()
     width = 14
     lines = []
     for label, code in BARS:
@@ -272,9 +342,8 @@ def render_pbm(state=None, display=None, width=160, height=43):
         img = Image.new('1', (width, height), 0)
         draw = ImageDraw.Draw(img)
         font = ImageFont.load_default()
-        draw.text((0, 8), f'Display {display_state().lower()}', fill=1,
-                  font=font)
-        draw.text((0, 22), 'not polling while asleep', fill=1, font=font)
+        for i, line in enumerate(_why_empty()[:3]):
+            draw.text((0, 6 + i * 12), line, fill=1, font=font)
         px = img.load()
         rows = [' '.join('1' if px[x, y] else '0' for x in range(width))
                 for y in range(height)]

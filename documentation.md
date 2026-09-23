@@ -202,6 +202,18 @@ destabilise a link running near its bandwidth limit -- on a 6K 120Hz panel the
 observed symptom was a continuous sleep/wake cycle that stopped only when
 DDC/CI was switched off in the OSD.
 
+### One reader at a time
+
+The LCD page command runs on a timer, and ddcutil takes an `flock` on
+`/dev/i2c-*`. If a read is slower than the refresh interval, the next
+invocation queues behind it, then the next, and the pile is self-sustaining:
+each read gets slower because it waits out the lock, which guarantees the
+following one also overlaps. Observed in practice as every read failing and
+the bus appearing dead until the stacked processes were killed.
+
+`g13-ddc page` therefore takes a non-blocking lock and, when it loses, prints
+the last rendered page rather than joining the queue.
+
 ### Shared bus access
 
 DDC/CI writes take around 50ms and concurrent access can wedge a panel until it
