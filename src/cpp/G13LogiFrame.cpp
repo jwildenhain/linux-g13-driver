@@ -49,6 +49,9 @@ void G13::set_logiframe_page_leds() {
 }
 
 void G13::set_logiframe_page(int page) {
+    lcd_command.cancel();
+    clear_lcd_buffer();
+    write_lcd();
     if (this->logiframe_page_count <= 0) {
         this->logiframe_page_count = 4;
     }
@@ -66,7 +69,13 @@ void G13::set_logiframe_page(int page) {
     if (mode_screens && mode_profiles) selected_pages[bindings] = logiframe_page;
     set_logiframe_page_leds();
     apply_logiframe_page_color();
+    if (!(mode_screens ? page_stats[logiframe_page] : logiframe_page == 0)
+            && cached_commands[bindings][logiframe_page] == logiframe_page_cmds[logiframe_page]
+            && !cached_outputs[bindings][logiframe_page].empty()) {
+        draw_command_output(cached_outputs[bindings][logiframe_page]);
+    }
     render_logiframe_page();
+    last_lcd_update = chrono::steady_clock::now();
 }
 
 bool G13::write_lines_to_lcd(const vector<string> &lines) {
@@ -80,60 +89,6 @@ bool G13::write_lines_to_lcd(const vector<string> &lines) {
 
     write_lcd();
     return true;
-}
-
-bool G13::run_command_lines(const string &command, vector<string> *lines) {
-    if (command.empty() || lines == null) {
-        return false;
-    }
-
-    lines->clear();
-
-    FILE *pipe = popen(command.c_str(), "r");
-    if (pipe == null) {
-        return false;
-    }
-
-    char output[256];
-    while (fgets(output, sizeof(output), pipe) != null) {
-        string line = output;
-        size_t newline = line.find('\n');
-        if (newline != string::npos) {
-            line = line.substr(0, newline);
-        }
-        if (!line.empty() && line[line.size() - 1] == '\r') {
-            line = line.substr(0, line.size() - 1);
-        }
-
-        lines->push_back(truncate_lcd_line(line));
-        if ((int)lines->size() >= LOGIFRAME_MAX_LINES) {
-            break;
-        }
-    }
-
-    pclose(pipe);
-    return !lines->empty();
-}
-
-bool G13::run_command_raw(const string &command, string *output) {
-    if (command.empty() || output == null) {
-        return false;
-    }
-
-    output->clear();
-
-    FILE *pipe = popen(command.c_str(), "r");
-    if (pipe == null) {
-        return false;
-    }
-
-    char outputBuffer[512];
-    while (fgets(outputBuffer, sizeof(outputBuffer), pipe) != null) {
-        output->append(outputBuffer);
-    }
-
-    pclose(pipe);
-    return !output->empty();
 }
 
 bool G13::render_logiframe_raw_pbm(const string &output) {
@@ -204,64 +159,44 @@ bool G13::render_logiframe_raw_pbm(const string &output) {
     return true;
 }
 
-bool G13::render_logiframe_page_with_command(int index, const std::string &title) {
-    string command_output;
+bool G13::draw_command_output(const string &output) {
+    if (output.empty()) return false;
+    if (render_logiframe_raw_pbm(output)) return true;
     vector<string> lines;
-
-    if ((index >= 0) && (index < 4) && this->run_command_raw(this->logiframe_page_cmds[index], &command_output)) {
-        if (render_logiframe_raw_pbm(command_output)) {
-            return true;
-        }
-
-        stringstream line_stream(command_output);
-        string line;
-        while (lines.size() < LOGIFRAME_MAX_LINES) {
-            if (!std::getline(line_stream, line)) {
-                break;
-            }
-
-            strip_cr(&line);
-            lines.push_back(truncate_lcd_line(line));
-        }
-
-        if (lines.empty()) {
-            lines.clear();
-        }
+    stringstream stream(output);
+    string line;
+    while (lines.size() < LOGIFRAME_MAX_LINES && getline(stream, line)) {
+        strip_cr(&line);
+        lines.push_back(truncate_lcd_line(line));
     }
-
-    if (lines.empty() && this->run_command_lines(this->logiframe_page_cmds[index], &lines) == false) {
-        if (this->logiframe_page_cmds[index].empty()) {
-            lines.push_back(title);
-        }
-        else {
-            lines.push_back(title);
-            lines.push_back("command returned no lines");
-            lines.push_back("check config: " + this->logiframe_page_cmds[index]);
-        }
-        if (index == 1) {
-            lines.push_back("no output from steam cmd");
-            lines.push_back("configure lcd_logiframe_page2_cmd");
-        }
-        else if (index == 2) {
-            lines.push_back("no output from token cmd");
-            lines.push_back("configure lcd_logiframe_page3_cmd");
-        }
-        else if (index == 3) {
-            lines.push_back("Set page4 command");
-            lines.push_back("via lcd_logiframe_page4_cmd");
-        }
-        else {
-            lines.push_back("configure page command");
-            lines.push_back("in bindings file");
-        }
-        lines.push_back("");
-    }
-
-    while ((int)lines.size() < LOGIFRAME_MAX_LINES) {
-        lines.push_back("");
-    }
-
     return write_lines_to_lcd(lines);
+}
+
+void G13::poll_lcd_command() {
+    if (!lcd_command.poll()) return;
+    // Transitions cancel the old process, so only the selected page can finish.
+    if (lcd_command.succeeded && !lcd_command.output.empty()) {
+        cached_commands[bindings][logiframe_page] = pending_command;
+        cached_outputs[bindings][logiframe_page] = lcd_command.output;
+        draw_command_output(lcd_command.output);
+    } else {
+        write_lines_to_lcd({pending_title, "Display command failed", "Retrying..."});
+    }
+    // Refresh intervals begin at completion: no back-to-back slow DDC queries.
+    last_lcd_update = chrono::steady_clock::now();
+}
+
+bool G13::render_logiframe_page_with_command(int index, const string &title) {
+    if (index < 0 || index >= 4) return false;
+    if (lcd_command.running()) return true;
+    const string &command = logiframe_page_cmds[index];
+    if (command.empty()) return write_lines_to_lcd({title});
+    pending_command = command;
+    pending_title = title;
+    if (!lcd_command.start(command)) {
+        return write_lines_to_lcd({title, "Cannot start display cmd"});
+    }
+    return true;
 }
 
 bool G13::render_logiframe_usage_page() {

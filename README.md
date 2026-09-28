@@ -67,6 +67,8 @@ Replug the G13 if device permissions have not taken effect. Run the tray as your
 | M3 | M3 | L1–L4 | `~/.g13/bindings-2.properties` |
 | M4 | MR | L1–L4 | `~/.g13/bindings-3.properties` |
 
+The LCD clears before a mode or screen changes colour. Command pages show their last successful frame immediately when revisited, then refresh asynchronously. On a first visit the cleared screen waits for fresh content; slow DDC queries no longer block mode buttons or key input. Commands are cancelled when leaving the page and stop after 10 seconds if they stall.
+
 **M1–M4 select key-assignment modes; the four rectangular LCD buttons select screens within the current mode.** This provides 16 configurable screen slots. LCD selection keeps the current key assignments and M indicator unchanged. Each mode remembers its last selected screen during the driver session; after restart it starts on L1.
 
 Saving settings enables `mode_profiles=1` and `mode_screens=1`. Older configuration files retain the linked-button behaviour until migrated with **Save & apply**. The four existing sources and colours move to M1/L1–L4; other modes start with editable labels. Held inputs are released before switching M modes. MR selects M4.
@@ -202,7 +204,7 @@ The tray fetches provider data in a background thread every **60 seconds** and w
 | Claude API | Today's UTC organisation input/output totals, including input cache tokens | Anthropic organisation admin key; API usage, not Claude Pro/Max remaining quota. |
 | Antigravity / text file | Up to four exported text lines plus file age | Select a regular local text file. You supply/update it; the app does not create an Antigravity export. |
 | Custom text | Up to five lines of your own text | Separate lines using `|` in the settings field. |
-| Keep existing command | Existing legacy page command | Compatibility option. Shell commands execute inside the driver and can delay input if slow. |
+| Keep existing command | Existing legacy page command | Runs asynchronously with a 10-second timeout and a 64 KiB output limit; cancelled when leaving the page. |
 
 Open the tray's **Credentials** submenu for Steam, Discord, OpenAI API, Claude API or Antigravity. Secret fields are masked. **Check connection** uses the entered values without saving; **Save** stores them; **Remove** clears the app's stored values. Credential saves are independent of pending screen/key edits. Credentials are stored locally in `~/.config/g13/tray.json` with owner-only `0600` permissions, not encrypted storage.
 
@@ -292,6 +294,7 @@ Run the generated `Linux-G13-GUI.jar` from its versioned directory under `deploy
 | Old library lacks thumb/joystick bindings | Regenerate the library with the current importer and reinstall it. Review/apply the game again; existing saved assignments are not migrated automatically. |
 | A screen says credentials are missing | Save the appropriate key/ID via Credentials, select the source, then Save & apply and refresh. Antigravity key storage alone does not provide statistics. |
 | Saved file changed externally | Reopen the app and review again before saving. |
+| System stats freeze after a clock correction | Older builds used wall time for LCD refreshes. Rebuild with `./build_driver.sh --force` and run `./scripts/g13ctl restart`. Current builds use monotonic time for refreshes and transfer rates. |
 | Stats stop updating | Keep the tray running. If a legacy command works in a terminal only, check the user service's environment and executable paths. |
 
 ## Development and verification

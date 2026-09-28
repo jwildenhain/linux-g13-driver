@@ -132,7 +132,7 @@ currently the last cache remains on the display until the tray starts again.
 | Claude API | Today's UTC organisation input/output totals including input cache tokens | `ANTHROPIC_ADMIN_KEY`; API usage, not Claude Pro/Max remaining quota |
 | Antigravity / text file | Up to four exported lines plus file age | No verified public quota API. Select a regular local text file you maintain/export; this app does not create an Antigravity export automatically |
 | Custom text | Up to five lines | Separate lines with `|` |
-| Keep existing command | Existing profile-zero page command | Compatibility option; legacy shell commands still run inside the driver and may block it |
+| Keep existing command | Existing profile-zero page command | Runs asynchronously; cancelled on page changes, with a 10-second timeout and 64 KiB output limit |
 
 No API credentials were available in the driver environment during installation.
 Steam, Discord and organisation API responses were tested with fixtures, not live

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <csignal>
 #include <ctime>
+#include <chrono>
 #include <map>
 #include <libusb-1.0/libusb.h>
 #include <vector>
@@ -13,6 +14,7 @@
 #include "StatsAverage.h"
 #include "G13Action.h"
 #include "Macro.h"
+#include "LcdCommand.h"
 
 using namespace std;
 
@@ -37,6 +39,12 @@ private:
     bool                  has_lcd_cache;
     bool                  mode_profiles;
     bool mode_screens = false;
+    bool loading_bindings = false;
+    LcdCommand lcd_command;
+    string pending_command, pending_title;
+    string cached_commands[4][4], cached_outputs[4][4];
+    void poll_lcd_command();
+    bool draw_command_output(const string &output);
     bool page_stats[4] = {true, false, false, false};
     int selected_pages[4] = {0, 0, 0, 0};
     double brightness = 100;
@@ -59,15 +67,15 @@ private:
 
     int                   bindings;
     unsigned char         lcd_buffer[G13_LCD_BUFFER_SIZE];
-    time_t                last_lcd_update;
+    std::chrono::steady_clock::time_point last_lcd_update;
     unsigned long long     prev_cpu_total;
     unsigned long long     prev_cpu_idle;
     unsigned long long     prev_net_rx;
     unsigned long long     prev_net_tx;
     unsigned long long     prev_disk_read_bytes;
     unsigned long long     prev_disk_write_bytes;
-    int                   prev_net_seconds;
-    int                   prev_disk_seconds;
+    double                prev_net_seconds; // steady_clock seconds
+    double                prev_disk_seconds; // steady_clock seconds
     bool                  has_prev_cpu;
     bool                  has_prev_net;
     bool                  has_prev_disk;
@@ -104,8 +112,6 @@ private:
     void apply_logiframe_page_color();
     bool render_logiframe_usage_page();
     bool render_logiframe_page_with_command(int index, const std::string &title);
-    bool run_command_lines(const std::string &command, std::vector<std::string> *lines);
-    bool run_command_raw(const std::string &command, std::string *output);
     bool render_logiframe_raw_pbm(const std::string &output);
     bool write_lines_to_lcd(const std::vector<std::string> &lines);
     bool setup_lcd_fifo(const std::string &path);

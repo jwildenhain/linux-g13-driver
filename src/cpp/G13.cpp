@@ -32,6 +32,7 @@
 #include "MacroAction.h"
 #include "Output.h"
 #include "Font.h"
+#include "StatsRate.h"
 
 using namespace std;
 static const int LCD_SOURCE_STATS = 0;
@@ -339,7 +340,7 @@ G13::G13(libusb_device *device) {
     memset(this->mode_key_down, 0, sizeof(this->mode_key_down));
 
     this->stick_mode = STICK_KEYS;
-    this->last_lcd_update = 0;
+    this->last_lcd_update = chrono::steady_clock::now();
     this->prev_cpu_total = 0;
     this->prev_cpu_idle = 0;
     this->prev_net_rx = 0;
@@ -413,6 +414,7 @@ G13::G13(libusb_device *device) {
 }
 
 G13::~G13() {
+    lcd_command.cancel();
     if (!this->loaded) {
         return;
     }
@@ -446,8 +448,8 @@ void G13::start() {
     loadBindings();
 
     keepGoing = 1;
-    render_lcd();
-    this->last_lcd_update = time(NULL);
+    if (this->lcd_source != LCD_SOURCE_LOGIFRAME) render_lcd();
+    this->last_lcd_update = chrono::steady_clock::now();
 
     while (keepGoing && g13_keep_running) {
         if (read() < 0) {
@@ -455,9 +457,11 @@ void G13::start() {
             // spinning on the same error. The service supervisor restarts us.
             break;
         }
+        poll_lcd_command();
         update_brightness(chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count());
-        time_t now = time(NULL);
-        if ((now - this->last_lcd_update) >= 1) {
+        // NTP/manual clock corrections must not pause screen refreshes.
+        auto now = chrono::steady_clock::now();
+        if ((now - this->last_lcd_update) >= chrono::seconds(1)) {
             render_lcd();
             this->last_lcd_update = now;
         }
@@ -528,6 +532,11 @@ void G13::loadBindings() {
         return;
     }
 
+    // Remove the old mode's pixels before any profile colour is applied.
+    lcd_command.cancel();
+    clear_lcd_buffer();
+    write_lcd();
+    loading_bindings = true;
     for (int i = 0; i < G13_NUM_KEYS; i++) {
         if (actions[i] != null) {
             actions[i]->set(0);
@@ -873,8 +882,9 @@ void G13::loadBindings() {
 
       } // finish reading all properties before closing the file
       file.close();
-      if (this->mode_profiles && this->lcd_source == LCD_SOURCE_LOGIFRAME) {
-          set_logiframe_page(mode_screens ? selected_pages[this->bindings] : this->bindings);
+      loading_bindings = false;
+      if (this->lcd_source == LCD_SOURCE_LOGIFRAME) {
+          set_logiframe_page(mode_profiles ? (mode_screens ? selected_pages[this->bindings] : this->bindings) : 0);
       }
 }
 
@@ -971,7 +981,7 @@ void G13::set_lcd_source(const string &mode, const string &path) {
             this->logiframe_page_count = 4;
         }
         this->lcd_source = LCD_SOURCE_LOGIFRAME;
-        set_logiframe_page(0);
+        if (!loading_bindings) set_logiframe_page(0);
         return;
     }
 
@@ -1409,26 +1419,16 @@ bool G13::read_disk_io_speed(unsigned long long *read_per_sec, unsigned long lon
     unsigned long long write_bytes = 0;
 
     if (!read_disk_io_bytes(&read_bytes, &write_bytes)) {
+        this->has_prev_disk = false;
         return false;
     }
 
-    time_t now = time(NULL);
-    if (this->has_prev_disk && (now > this->prev_disk_seconds)) {
-        unsigned long long delta_seconds = now - this->prev_disk_seconds;
-        unsigned long long delta_read = (read_bytes >= this->prev_disk_read_bytes)
-                ? (read_bytes - this->prev_disk_read_bytes)
-                : 0;
-        unsigned long long delta_write = (write_bytes >= this->prev_disk_write_bytes)
-                ? (write_bytes - this->prev_disk_write_bytes)
-                : 0;
-
-        *read_per_sec = (delta_seconds > 0) ? (delta_read / delta_seconds) : 0;
-        *write_per_sec = (delta_seconds > 0) ? (delta_write / delta_seconds) : 0;
-    }
-    else {
-        *read_per_sec = 0;
-        *write_per_sec = 0;
-    }
+    double now = chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count();
+    double elapsed = now - this->prev_disk_seconds;
+    *read_per_sec = this->has_prev_disk
+            ? bytes_per_second(read_bytes, this->prev_disk_read_bytes, elapsed) : 0;
+    *write_per_sec = this->has_prev_disk
+            ? bytes_per_second(write_bytes, this->prev_disk_write_bytes, elapsed) : 0;
 
     this->prev_disk_read_bytes = read_bytes;
     this->prev_disk_write_bytes = write_bytes;
@@ -1651,21 +1651,18 @@ void G13::render_stats_to_lcd() {
     unsigned long long rx = 0;
     unsigned long long tx = 0;
     if (read_net_sample(&rx, &tx)) {
-        time_t now = time(NULL);
-        if (this->has_prev_net && (now > this->prev_net_seconds)) {
-            unsigned long long d_seconds = now - this->prev_net_seconds;
-            if (d_seconds > 0) {
-                unsigned long long d_rx = (rx > this->prev_net_rx) ? (rx - this->prev_net_rx) : 0;
-                unsigned long long d_tx = (tx > this->prev_net_tx) ? (tx - this->prev_net_tx) : 0;
-                unsigned long long total_per_sec = (d_rx + d_tx) / d_seconds;
-                net_rate = total_per_sec;
-            }
+        double elapsed = sample_time - this->prev_net_seconds;
+        if (this->has_prev_net && elapsed > 0) {
+            net_rate = bytes_per_second(rx, this->prev_net_rx, elapsed)
+                    + bytes_per_second(tx, this->prev_net_tx, elapsed);
         }
 
         this->prev_net_rx = rx;
         this->prev_net_tx = tx;
-        this->prev_net_seconds = now;
+        this->prev_net_seconds = sample_time;
         this->has_prev_net = true;
+    } else {
+        this->has_prev_net = false;
     }
 
     unsigned long long disk_read_per_sec = 0;
@@ -1712,7 +1709,7 @@ void G13::render_stats_to_lcd() {
 int G13::read() {
     unsigned char buffer[G13_REPORT_SIZE];
     int size;
-    int error = libusb_interrupt_transfer(handle, LIBUSB_ENDPOINT_IN | G13_KEY_ENDPOINT, buffer, G13_REPORT_SIZE, &size, brightness_held ? 25 : 1000);
+    int error = libusb_interrupt_transfer(handle, LIBUSB_ENDPOINT_IN | G13_KEY_ENDPOINT, buffer, G13_REPORT_SIZE, &size, (brightness_held || lcd_command.running()) ? 25 : 1000);
     if (error && error != LIBUSB_ERROR_TIMEOUT) {
         std::map<int, std::string> errors;
         errors[LIBUSB_SUCCESS] = "LIBUSB_SUCCESS";

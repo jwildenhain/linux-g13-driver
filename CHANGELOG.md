@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Clear old LCD content before changing mode/page colours. Finish loading each
+  profile before rendering it, avoiding an intermediate system-statistics page.
+- Run LCD page commands asynchronously, poll results within 25 ms of an idle
+  USB read, and reuse cached command frames on return. Cancel old commands and
+  their descendants on transitions; cap execution at 10 seconds and output at
+  64 KiB. Refresh once per second after completion rather than stacking queries.
+- Test transition ordering, slow command responsiveness, cache invalidation,
+  cancellation, PBM output, failures and timeouts with mocked USB transfers.
+
+- Use monotonic time for LCD refreshes and network/disk rates. An NTP clock
+  correction after startup could previously freeze the LCD until wall time
+  caught up. Preserve fractional rate intervals and reset baselines after
+  unavailable samples. Regression tests cover backward/forward clock changes,
+  idle USB timeouts, fractional intervals and counter resets.
+
 - Add an optional DDC/CI monitor module (`app/g13_ddc.py`, `scripts/g13-ddc`):
   an LCD page with live brightness, contrast and volume bars, and keys for
   wake, brightness, contrast, volume and auto-brightness. Inactive with a clear

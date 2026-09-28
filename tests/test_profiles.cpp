@@ -5,6 +5,8 @@
 #include <csignal>
 #include <ctime>
 #include <cassert>
+#include <algorithm>
+#include <iostream>
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
@@ -14,10 +16,45 @@
 #undef private
 #include "PassThroughAction.h"
 #include "Font.h"
+#include "StatsRate.h"
 volatile sig_atomic_t g13_keep_running = 1;
+static bool simulate_clock_step = false;
+static time_t simulated_wall_time = 36000, wall_clock_step = -3600;
+static int wall_clock_reads = 0;
+static int input_polls = 0, lcd_writes = 0, initial_lcd_writes = 0;
+static std::vector<char> usb_events;
+extern "C" time_t __real_time(time_t *);
+extern "C" time_t __wrap_time(time_t *result) {
+    ++wall_clock_reads;
+    if (!simulate_clock_step) return __real_time(result);
+    if (result) *result = simulated_wall_time;
+    return simulated_wall_time;
+}
 extern "C" int __wrap_libusb_open(libusb_device *, libusb_device_handle **) { return -1; }
-extern "C" int __wrap_libusb_control_transfer(libusb_device_handle *, uint8_t, uint8_t, uint16_t, uint16_t, unsigned char *, uint16_t length, unsigned int) { return length; }
-extern "C" int __wrap_libusb_interrupt_transfer(libusb_device_handle *, unsigned char, unsigned char *, int length, int *actual, unsigned int) { *actual=length; return 0; }
+extern "C" int __wrap_libusb_control_transfer(libusb_device_handle *, uint8_t, uint8_t, uint16_t value, uint16_t, unsigned char *, uint16_t length, unsigned int) {
+    if (value == 0x307) usb_events.push_back('C');
+    return length;
+}
+extern "C" int __wrap_libusb_interrupt_transfer(libusb_device_handle *, unsigned char endpoint, unsigned char *data, int length, int *actual, unsigned int) {
+    if (endpoint == G13_LCD_ENDPOINT) {
+        ++lcd_writes;
+        bool blank = true;
+        for (int i = 32; i < length; ++i) blank = blank && data[i] == 0;
+        usb_events.push_back(blank ? 'B' : 'F');
+    }
+    if (simulate_clock_step && (endpoint & LIBUSB_ENDPOINT_IN)) {
+        if (++input_polls == 1) {
+            initial_lcd_writes = lcd_writes;
+            simulated_wall_time += wall_clock_step; // NTP/manual correction.
+        }
+        usleep(1100000); // Real monotonic time advances through a USB timeout.
+        *actual = 0;
+        if (input_polls == 2) g13_keep_running = 0;
+        return LIBUSB_ERROR_TIMEOUT;
+    }
+    *actual=length;
+    return 0;
+}
 class ReleaseProbe : public G13Action {
     bool *released;
 public:
@@ -103,7 +140,18 @@ int main() {
     averages.clear();
     assert(averages.add("cpu", 80, 14, 5) == 80);
 
+    // Rates use fractional monotonic intervals and tolerate counter resets.
+    assert(bytes_per_second(1500, 500, 1.0) == 1000);
+    assert(bytes_per_second(1500, 500, 1.25) == 800);
+    assert(bytes_per_second(1500, 500, 0.5) == 2000);
+    assert(bytes_per_second(500, 1500, 1.0) == 0);
+    assert(bytes_per_second(1500, 500, 0.0) == 0);
+    assert(bytes_per_second(1500, 500, -1.0) == 0);
+    assert(bytes_per_second(1500, 500, INFINITY) == 0);
+    assert(bytes_per_second(1500, 500, NAN) == 0);
+
     // Render both disk directions, and verify polling reuses the current frame.
+    wall_clock_reads = 0;
     setenv("PATH", directory, 1);
     driver.render_stats_to_lcd();
     assert(driver.stats_lines.size() == 5);
@@ -117,6 +165,8 @@ int main() {
     assert(driver.stats_lines[4].find(" R") == std::string::npos);
     assert(driver.stats_lines[4].size() <= 26);
     setenv("PATH", original_path.c_str(), 1);
+
+    assert(wall_clock_reads == 0); // No wall-clock dependency in stats/rates.
 
     // Lowercase must not shift when a backslash comment is preprocessed.
     assert(sizeof(font_5x7) == 475);
@@ -205,6 +255,112 @@ int main() {
     double brightness_saved = -1;
     std::ifstream(base + "/brightness") >> brightness_saved;
     assert(brightness_saved == 50);
+
+    // Forward AND backward wall-clock corrections must not suspend LCD writes.
+    // Page 1 is plain text here: no real GPU/DDC devices are queried.
+    for (time_t step : {-3600, 3600}) {
+        driver.bindings = 0;
+        driver.selected_pages[0] = 0;
+        driver.handle = NULL;
+        driver.loaded = 1;
+        input_polls = 0;
+        wall_clock_step = step;
+        simulated_wall_time = 36000;
+        simulate_clock_step = true;
+        driver.start();
+        simulate_clock_step = false;
+        driver.loaded = 0; // Keep the destructor away from a real USB handle.
+        g13_keep_running = 1;
+        assert(input_polls == 2);
+        assert(lcd_writes == initial_lcd_writes + 2);
+    }
+
+    // Real child processes, mocked USB: a slow page cannot block a mode switch.
+    std::string marker = std::string(directory) + "/late-result";
+    std::ofstream(base + "/bindings-1.properties")
+        << "mode_profiles=1\nmode_screens=1\nlcd_mode=logiframe\n"
+        << "color=20,30,40\nlcd_logiframe_page1_stats=0\n"
+        << "lcd_logiframe_page1_cmd=/bin/sleep 0.5; printf old > " << marker << "\n";
+    driver.loaded = 1;
+    driver.bindings = 1;
+    memset(driver.lcd_buffer, 0xff, sizeof(driver.lcd_buffer));
+    usb_events.clear();
+    auto started = std::chrono::steady_clock::now();
+    driver.loadBindings();
+    auto transition_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+    assert(transition_ms < 250);
+    assert(driver.last_stats_sample == -1); // No partially parsed statistics page.
+    assert(!usb_events.empty() && usb_events.front() == 'B');
+    assert(driver.lcd_command.running());
+    for (char event : usb_events) assert(event != 'F'); // Only blanks before data.
+    assert(std::find(usb_events.begin(), usb_events.end(), 'C') != usb_events.end());
+    driver.bindings = 2;
+    driver.loadBindings();
+    assert(!driver.lcd_command.running());
+    usleep(600000);
+    driver.poll_lcd_command();
+    assert(access(marker.c_str(), F_OK) != 0); // Cancelled descendants cannot finish.
+
+    auto finish_page = [&]() {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (driver.lcd_command.running() && std::chrono::steady_clock::now() < deadline) {
+            driver.poll_lcd_command();
+            usleep(1000);
+        }
+        assert(!driver.lcd_command.running());
+    };
+    driver.logiframe_page_cmds[0] = "printf cached";
+    driver.set_logiframe_page(0);
+    finish_page();
+    assert(driver.lcd_command.succeeded);
+    std::string cached_frame(reinterpret_cast<char *>(driver.lcd_buffer), G13_LCD_BUFFER_SIZE);
+    driver.logiframe_page_cmds[1] = "/bin/sleep 5; printf obsolete";
+    driver.set_logiframe_page(1);
+    started = std::chrono::steady_clock::now();
+    driver.set_logiframe_page(0);
+    assert(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(250));
+    assert(std::string(reinterpret_cast<char *>(driver.lcd_buffer), G13_LCD_BUFFER_SIZE) == cached_frame);
+    driver.logiframe_page_cmds[0] = "/bin/sleep 5; printf changed";
+    driver.set_logiframe_page(0);
+    for (unsigned char pixel : driver.lcd_buffer) assert(pixel == 0); // Invalidate stale cache.
+    driver.lcd_command.cancel();
+    std::string pbm_file = std::string(directory) + "/page.pbm";
+    {
+        std::ofstream pbm(pbm_file);
+        pbm << "P1\n160 43\n1 ";
+        for (int pixel = 1; pixel < 160 * 43; ++pixel) pbm << "0 ";
+    }
+    driver.logiframe_page_cmds[0] = "cat " + pbm_file;
+    driver.set_logiframe_page(0);
+    finish_page();
+    assert(driver.lcd_command.succeeded);
+    assert(driver.lcd_buffer[0] == 1);
+    for (int pixel = 1; pixel < G13_LCD_BUFFER_SIZE; ++pixel) assert(driver.lcd_buffer[pixel] == 0);
+    driver.loaded = 0;
+
+    LcdCommand command;
+    auto finish_command = [&]() {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (command.running() && std::chrono::steady_clock::now() < deadline) {
+            command.poll();
+            usleep(1000);
+        }
+        assert(!command.running());
+    };
+    assert(command.start("/bin/sleep 5", 50));
+    finish_command(); assert(!command.succeeded); // A wedged provider is bounded.
+    assert(command.start("printf failed; exit 7"));
+    finish_command(); assert(!command.succeeded);
+    assert(command.start("head -c 70000 /dev/zero"));
+    finish_command(); assert(!command.succeeded); // Bound memory/output too.
+    std::string count_file = std::string(directory) + "/command-count";
+    assert(command.start("printf x >> " + count_file));
+    finish_command(); assert(command.succeeded && command.output.empty());
+    std::ifstream count_stream(count_file);
+    std::string count; count_stream >> count;
+    assert(count == "x"); // Empty output does not invoke a fallback command again.
+    std::cout << "Slow-page mode transition: " << transition_ms << " ms; cache/cancellation/timeout checks passed\n";
 
     for(int i=0;i<4;i++) std::remove((base+"/bindings-"+std::to_string(i)+".properties").c_str());
     rmdir(base.c_str());rmdir(directory);
