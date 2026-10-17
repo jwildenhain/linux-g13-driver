@@ -103,6 +103,21 @@ def detect(refresh=False):
                     display = cur
                     break
 
+    if display is None:
+        # A failed probe is not proof the monitor is gone: ddcutil may be
+        # missing from PATH (it is often a local build -- see G13_DDCUTIL), or
+        # the panel may simply be showing another input. Caching the failure
+        # would take every later call down with it, including the ones that
+        # would otherwise be served from the daemon, so keep the last known
+        # display and let it age out naturally instead.
+        stale = None
+        try:
+            stale = json.loads(DETECT_CACHE.read_text()).get('display')
+        except (OSError, ValueError):
+            pass
+        if stale:
+            return stale
+
     try:
         CACHE.mkdir(parents=True, exist_ok=True)
         DETECT_CACHE.write_text(json.dumps(
