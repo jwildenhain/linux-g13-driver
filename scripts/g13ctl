@@ -11,7 +11,7 @@ set -euo pipefail
 readonly UNIT="g13-driver.service"
 readonly G13_VENDOR="046d"
 readonly G13_PRODUCT="c21c"
-readonly UDEV_RULE="91-g13.rules"
+readonly UDEV_RULE="72-g13.rules"
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/g13"
@@ -130,6 +130,19 @@ main_pid_is_driver() {
   [[ -n "$pid" && "$pid" != "0" && -r "/proc/$pid/cmdline" ]] || return 1
   cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" || return 1
   [[ "$cmdline" == *Linux-G13-Driver* ]]
+}
+
+# Event node of the driver's own virtual keyboard, if it exists.
+find_g13_evdev() {
+  local d e
+  for d in /sys/class/input/input*; do
+    [[ -r "$d/name" ]] || continue
+    [[ "$(<"$d/name")" == "G13" ]] || continue
+    for e in "$d"/event*; do
+      [[ -e "$e" ]] && { printf '/dev/input/%s\n' "$(basename "$e")"; return 0; }
+    done
+  done
+  return 1
 }
 
 uinput_node() {
@@ -296,17 +309,46 @@ cmd_udev_install() {
   install -m 0644 "$src" "/etc/udev/rules.d/$UDEV_RULE"
   info "Installed /etc/udev/rules.d/$UDEV_RULE"
 
+  # This rule used to ship as 91-g13.rules, which sorted after the uaccess
+  # builtin and so never granted an ACL. Drop the old copy or both apply.
+  if [[ -e /etc/udev/rules.d/91-g13.rules ]]; then
+    rm -f /etc/udev/rules.d/91-g13.rules
+    info "Removed superseded /etc/udev/rules.d/91-g13.rules"
+  fi
+
   udevadm control --reload-rules
   # logind assigns uaccess ACLs on "add", not "change", so re-emit add events -
   # otherwise the rule only takes effect after a physical replug.
   udevadm trigger --action=add --subsystem-match=usb \
     --attr-match=idVendor="$G13_VENDOR" --attr-match=idProduct="$G13_PRODUCT"
   udevadm trigger --action=add --subsystem-match=misc --sysname-match=uinput
+
+  # The driver's virtual keyboard lives under /devices/virtual and matches none
+  # of the above, so re-emit it by name or the wake listener stays locked out.
+  local input_dir event_node
+  for input_dir in /sys/class/input/input*; do
+    [[ -r "$input_dir/name" ]] || continue
+    [[ "$(<"$input_dir/name")" == "G13" ]] || continue
+    udevadm trigger --action=add "$input_dir" 2>/dev/null || true
+    for event_node in "$input_dir"/event*; do
+      [[ -e "$event_node" ]] && udevadm trigger --action=add "$event_node" 2>/dev/null || true
+    done
+  done
+
   udevadm settle 2>/dev/null || true
   info "Reloaded udev rules and re-emitted device add events."
 
   # Report whether the invoking user actually gained access.
-  local target_user="${SUDO_USER:-}" node
+  local target_user="${SUDO_USER:-}" node evdev
+  evdev="$(find_g13_evdev)"
+  if [[ -n "$target_user" && -n "$evdev" ]]; then
+    if sudo -u "$target_user" test -r "$evdev" 2>/dev/null; then
+      info "$evdev is readable by $target_user (wake listener can run)."
+    else
+      warn "$evdev is NOT readable by $target_user - restart the driver so the"
+      warn "virtual keyboard is recreated under the new rule:  g13ctl restart"
+    fi
+  fi
   if [[ -n "$target_user" ]] && node="$(find_device_node)"; then
     if sudo -u "$target_user" test -w "$node" 2>/dev/null; then
       info ""

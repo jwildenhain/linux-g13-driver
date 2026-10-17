@@ -2,6 +2,12 @@
 #
 # Install with:  sudo ./scripts/g13ctl udev-install
 #
+# The file number matters. systemd runs the uaccess builtin from
+# 73-seat-late.rules via TAG=="uaccess", so a rule that adds that tag must sort
+# BEFORE 73 or the tag is set too late to have any effect: the device ends up
+# tagged but with no ACL. This lived at 91 and the virtual keyboard below never
+# got an ACL because of it.
+#
 # TAG+="uaccess" hands the raw USB node to whoever owns the active local
 # session, which is what lets the driver run as an unprivileged systemd user
 # service instead of under sudo. MODE/GROUP are the fallback for headless or
@@ -11,3 +17,8 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="c21c", TAG+="uaccess
 # uinput is how the driver injects key events. static_node applies the mode and
 # group even when the module is autoloaded on first open.
 KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput", MODE="0660", GROUP="input"
+
+# The driver's own virtual keyboard. g13-wake-listener reads this node directly
+# so the wake key still works while the session is locked, which is where GNOME
+# stops dispatching custom keybindings.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="G13", TAG+="uaccess", MODE="0660", GROUP="input"
