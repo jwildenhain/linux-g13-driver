@@ -21,4 +21,8 @@ KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinpu
 # The driver's own virtual keyboard. g13-wake-listener reads this node directly
 # so the wake key still works while the session is locked, which is where GNOME
 # stops dispatching custom keybindings.
-SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="G13", TAG+="uaccess", MODE="0660", GROUP="input"
+#
+# "name" is a string the device supplies, so match the virtual devpath too:
+# uinput nodes always live under /devices/virtual/input, and without that a
+# physical device reporting itself as "G13" would be handed the same access.
+SUBSYSTEM=="input", KERNEL=="event*", DEVPATH=="/devices/virtual/input/*", ATTRS{name}=="G13", TAG+="uaccess", MODE="0660", GROUP="input"

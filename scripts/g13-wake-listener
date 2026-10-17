@@ -22,21 +22,42 @@ import sys
 import time
 from pathlib import Path
 
-DEVICE_NAME = os.environ.get('G13_WAKE_DEVICE', 'G13')
-KEYCODE = int(os.environ.get('G13_WAKE_KEYCODE', '148'))
-ACTION = os.environ.get('G13_WAKE_ACTION', 'wake-hard')
-COOLDOWN = float(os.environ.get('G13_WAKE_COOLDOWN', '10'))
+
+def log(message):
+    print(f'{time.strftime("%F %T")}  {message}', flush=True)
+
+
+def _env_number(name, default, cast):
+    """Read a numeric setting, falling back loudly rather than dying.
+
+    These come from an EnvironmentFile a human edits. Parsing them at import
+    time meant one typo raised ValueError before logging existed, and systemd's
+    Restart=always turned that into a silent crash loop with nothing but a
+    traceback to go on.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == '':
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        log(f'WARNING: {name}={raw!r} is not a number, using {default!r}')
+        return default
+
+
+DEVICE_NAME = os.environ.get('G13_WAKE_DEVICE') or 'G13'
+KEYCODE = _env_number('G13_WAKE_KEYCODE', 148, lambda v: int(v, 0))
+ACTION = os.environ.get('G13_WAKE_ACTION') or 'wake-hard'
+COOLDOWN = _env_number('G13_WAKE_COOLDOWN', 10.0, float)
 DDC = os.environ.get('G13_DDC_BIN') or str(Path(__file__).resolve().parent/'g13-ddc')
 
 EV_KEY = 0x01
 KEY_PRESS = 1
-# struct input_event: struct timeval (two longs), __u16 type, __u16 code, __s32 value
+# struct input_event: struct timeval (two longs), __u16 type, __u16 code,
+# __s32 value. Native sizes, so this follows the word size of the build; the
+# one layout it would not match is 32-bit userspace with a 64-bit time_t.
 EVENT_FORMAT = 'llHHi'
 EVENT_SIZE = struct.calcsize(EVENT_FORMAT)
-
-
-def log(message):
-    print(f'{time.strftime("%F %T")}  {message}', flush=True)
 
 
 def find_device(name):
