@@ -1,0 +1,21 @@
+[Unit]
+Description=G13 monitor wake listener (works while the session is locked)
+Documentation=file:%h/.cache/g13/ddc-key.log
+# graphical-session, not default.target: the wake action needs DISPLAY and
+# XAUTHORITY, which only exist once the session has imported its environment.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/g13/g13-driver.env
+ExecStart=%h/.local/bin/g13-wake-listener
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=g13-wake
+
+[Install]
+WantedBy=graphical-session.target

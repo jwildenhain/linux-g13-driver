@@ -28,7 +28,7 @@ import g13_ddc                                            # noqa: E402
 
 # device key, file key, Linux keycode, X keysym, action
 KEYMAP = [
-    ('G1',  'G0',  148, 'XF86Launch1', 'wake'),
+    ('G1',  'G0',  148, 'XF86Launch1', 'wake-hard'),
     ('G2',  'G1',  184, 'XF86Launch5', 'brightness +5'),
     ('G9',  'G8',  185, 'XF86Launch6', 'brightness -5'),
     ('G3',  'G2',  186, 'XF86Launch7', 'contrast +5'),
@@ -149,7 +149,18 @@ def main(argv):
                     delta = int(rest, 0)
                 except ValueError:
                     pass
-            result = g13_ddc.act(action, delta)
+            # A wake can arrive from the desktop hotkey and from the evdev
+            # listener at the same time. wake-hard cycles outputs, so running
+            # it twice is disruptive -- let the first caller win and tell the
+            # loser why it did nothing.
+            if action in ('wake', 'wake-hard'):
+                with g13_ddc.single_flight(name='ddc-key.lock') as lock:
+                    if not lock.acquired:
+                        print('wake already running')
+                        return 0
+                    result = g13_ddc.act(action, delta)
+            else:
+                result = g13_ddc.act(action, delta)
             g13_ddc.log_action(f'{action} {delta} -> {result}')
             print(result)
             return 0

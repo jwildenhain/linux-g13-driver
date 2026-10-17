@@ -9,6 +9,7 @@
 set -euo pipefail
 
 readonly UNIT="g13-driver.service"
+readonly WAKE_UNIT="g13-wake-listener.service"
 readonly G13_VENDOR="046d"
 readonly G13_PRODUCT="c21c"
 readonly UDEV_RULE="72-g13.rules"
@@ -226,6 +227,13 @@ cmd_install() {
 
   install -m 0755 "$REPO_DIR/scripts/g13ctl" "$LOCAL_BIN/g13ctl"
   install -m 0644 "$unit_src" "$SYSTEMD_USER_DIR/$UNIT"
+
+  # Monitor wake listener. It reads the driver's virtual keyboard directly, so
+  # the wake key still fires while the session is locked.
+  if [[ -f "$REPO_DIR/scripts/g13-wake-listener" ]]; then
+    install -m 0755 "$REPO_DIR/scripts/g13-wake-listener" "$LOCAL_BIN/g13-wake-listener"
+    install -m 0644 "$REPO_DIR/scripts/$WAKE_UNIT" "$SYSTEMD_USER_DIR/$WAKE_UNIT"
+  fi
   # Keep the udev rule next to the config so `sudo g13ctl udev-install` works
   # from the installed copy, without needing the repo checkout to be present.
   [[ -f "$REPO_DIR/$UDEV_RULE" ]] && install -m 0644 "$REPO_DIR/$UDEV_RULE" "$CONFIG_DIR/$UDEV_RULE"
@@ -242,17 +250,26 @@ cmd_install() {
     chmod 0600 "$ENV_FILE"
   fi
 
+  # One source of truth for g13-ddc: the checkout, same as the GNOME bindings.
+  if grep -q '^G13_DDC_BIN=' "$ENV_FILE"; then
+    sed -i "s#^G13_DDC_BIN=.*#G13_DDC_BIN=$REPO_DIR/scripts/g13-ddc#" "$ENV_FILE"
+  else
+    printf 'G13_DDC_BIN=%s\n' "$REPO_DIR/scripts/g13-ddc" >> "$ENV_FILE"
+  fi
+
   info "Installed:"
   info "  $LOCAL_BIN/g13ctl"
   info "  $SYSTEMD_USER_DIR/$UNIT"
   info "  $ENV_FILE"
   [[ -f "$CONFIG_DIR/$UDEV_RULE" ]] && info "  $CONFIG_DIR/$UDEV_RULE"
+  [[ -f "$SYSTEMD_USER_DIR/$WAKE_UNIT" ]] && info "  $SYSTEMD_USER_DIR/$WAKE_UNIT"
 
   require_systemd_user
   systemctl --user daemon-reload
 
   if [[ "$enable" -eq 1 ]]; then
     systemctl --user enable --now "$UNIT"
+    [[ -f "$SYSTEMD_USER_DIR/$WAKE_UNIT" ]] && systemctl --user enable --now "$WAKE_UNIT"
     info ""
     info "Service enabled and started."
   else
@@ -272,7 +289,10 @@ cmd_uninstall() {
   if have_systemd_user && unit_installed; then
     systemctl --user disable --now "$UNIT" 2>/dev/null || true
   fi
-  rm -f "$SYSTEMD_USER_DIR/$UNIT"
+  if have_systemd_user && [[ -f "$SYSTEMD_USER_DIR/$WAKE_UNIT" ]]; then
+    systemctl --user disable --now "$WAKE_UNIT" 2>/dev/null || true
+  fi
+  rm -f "$SYSTEMD_USER_DIR/$UNIT" "$SYSTEMD_USER_DIR/$WAKE_UNIT"
   have_systemd_user && systemctl --user daemon-reload || true
   info "Removed $SYSTEMD_USER_DIR/$UNIT"
   info "Left in place (delete by hand if you want them gone):"
@@ -447,6 +467,18 @@ cmd_status() {
     esac
     note "unit" "$SYSTEMD_USER_DIR/$UNIT"
   fi
+
+    if [[ -f "$SYSTEMD_USER_DIR/$WAKE_UNIT" ]]; then
+      local wake_active
+      wake_active="$(systemctl --user is-active "$WAKE_UNIT" 2>/dev/null || true)"
+      if [[ "$wake_active" == "active" ]]; then
+        ok "wake listener" "active"
+      else
+        bad "wake listener" "${wake_active:-inactive}"
+      fi
+    else
+      note "wake listener" "not installed"
+    fi
 
   head_ "Device"
   local node

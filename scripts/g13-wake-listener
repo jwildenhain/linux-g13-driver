@@ -1,0 +1,132 @@
+#!/usr/bin/python3
+"""g13-wake-listener - run a monitor wake action from the G13 while locked.
+
+GNOME does not dispatch custom keybindings to the lock screen, which is exactly
+the state the wake key exists for: the evidence was ~/.cache/g13/ddc-key.log,
+where brightness and input fired over a thousand times and wake never did.
+Reading the driver's own virtual keyboard bypasses the desktop entirely, so the
+key works blanked, locked or idle.
+
+Configuration (environment, all optional):
+  G13_WAKE_DEVICE    input device name to watch      (default: G13)
+  G13_WAKE_KEYCODE   Linux keycode to act on         (default: 148, G1 in M2)
+  G13_WAKE_ACTION    g13-ddc key action to run       (default: wake-hard)
+  G13_WAKE_COOLDOWN  seconds to ignore repeats       (default: 10)
+  G13_DDC_BIN        path to g13-ddc                 (default: next to this)
+"""
+
+import os
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+DEVICE_NAME = os.environ.get('G13_WAKE_DEVICE', 'G13')
+KEYCODE = int(os.environ.get('G13_WAKE_KEYCODE', '148'))
+ACTION = os.environ.get('G13_WAKE_ACTION', 'wake-hard')
+COOLDOWN = float(os.environ.get('G13_WAKE_COOLDOWN', '10'))
+DDC = os.environ.get('G13_DDC_BIN') or str(Path(__file__).resolve().parent/'g13-ddc')
+
+EV_KEY = 0x01
+KEY_PRESS = 1
+# struct input_event: struct timeval (two longs), __u16 type, __u16 code, __s32 value
+EVENT_FORMAT = 'llHHi'
+EVENT_SIZE = struct.calcsize(EVENT_FORMAT)
+
+
+def log(message):
+    print(f'{time.strftime("%F %T")}  {message}', flush=True)
+
+
+def find_device(name):
+    """Event node for an input device, matched on the name the kernel reports.
+
+    Resolved every time rather than cached: the driver recreates its uinput
+    device on restart and on replug, and the event number moves when it does.
+    """
+    try:
+        text = Path('/proc/bus/input/devices').read_text()
+    except OSError:
+        return None
+    for block in text.split('\n\n'):
+        if f'Name="{name}"' not in block:
+            continue
+        for line in block.splitlines():
+            if not line.startswith('H: Handlers='):
+                continue
+            for token in line.split():
+                if token.startswith('event'):
+                    return Path('/dev/input')/token
+    return None
+
+
+def run_action():
+    try:
+        done = subprocess.run([DDC, 'key', ACTION], capture_output=True,
+                              text=True, timeout=120)
+        message = (done.stdout or done.stderr).strip() or f'exit {done.returncode}'
+    except (OSError, subprocess.TimeoutExpired) as err:
+        message = f'failed: {err}'
+    log(f'{ACTION}: {message}')
+
+
+def watch(path):
+    """Block on the device until it goes away. Returns why it stopped."""
+    last = 0.0
+    with path.open('rb', buffering=0) as handle:
+        while True:
+            data = handle.read(EVENT_SIZE)
+            if not data or len(data) < EVENT_SIZE:
+                return 'device closed'
+            _, _, etype, code, value = struct.unpack(EVENT_FORMAT, data)
+            if etype != EV_KEY or code != KEYCODE or value != KEY_PRESS:
+                continue
+            now = time.monotonic()
+            if now - last < COOLDOWN:
+                log(f'keycode {KEYCODE} ignored (within {COOLDOWN:g}s cooldown)')
+                continue
+            last = now
+            log(f'keycode {KEYCODE} pressed')
+            run_action()
+
+
+def main():
+    log(f'watching for keycode {KEYCODE} on "{DEVICE_NAME}" -> {DDC} key {ACTION}')
+    if not os.environ.get('DISPLAY'):
+        # xset and xrandr are the part of wake that actually restores the link.
+        log('WARNING: DISPLAY is not set, so the X half of the wake will be '
+            'skipped and only the DDC write will be attempted')
+
+    announced = None
+    while True:
+        path = find_device(DEVICE_NAME)
+        if path is None:
+            reason = f'waiting for input device "{DEVICE_NAME}"'
+        elif not os.access(path, os.R_OK):
+            reason = (f'waiting for read access to {path} - install the udev '
+                      f'rules: sudo ./scripts/g13ctl udev-install')
+        else:
+            reason = None
+
+        if reason:
+            if reason != announced:
+                log(reason)
+                announced = reason
+            time.sleep(2)
+            continue
+
+        announced = None
+        log(f'watching {path}')
+        try:
+            log(watch(path))
+        except OSError as err:
+            log(f'{path}: {err}')
+        time.sleep(1)
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)

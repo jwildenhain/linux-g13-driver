@@ -230,8 +230,11 @@ def _percent(got):
     return 0 if maximum <= 0 else max(0, min(100, round(value * 100 / maximum)))
 
 
-def single_flight(timeout=0):
+def single_flight(timeout=0, name='ddc.lock'):
     """Lock so only one DDC reader runs at a time, per user.
+
+    `name` picks the lock file, so key actions can serialise against each other
+    without contending with the LCD page render, which runs on a timer.
 
     The LCD page command is invoked on a timer. When a read is slower than the
     refresh interval -- which it is whenever the monitor is unresponsive, since
@@ -249,7 +252,7 @@ def single_flight(timeout=0):
         def __enter__(self):
             try:
                 CACHE.mkdir(parents=True, exist_ok=True)
-                self._fh = (CACHE/'ddc.lock').open('w')
+                self._fh = (CACHE/name).open('w')
                 fcntl.flock(self._fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self.acquired = True
             except (OSError, BlockingIOError):

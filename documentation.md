@@ -118,7 +118,7 @@ both without changing anything.
 
 | Device key | File key | Linux keycode | X keysym | Action |
 | --- | --- | --- | --- | --- |
-| G1  | `G0`  | 148 | `XF86Launch1` | wake the panel |
+| G1  | `G0`  | 148 | `XF86Launch1` | wake the panel (`wake-hard`) |
 | G2  | `G1`  | 184 | `XF86Launch5` | brightness +5 |
 | G9  | `G8`  | 185 | `XF86Launch6` | brightness -5 |
 | G3  | `G2`  | 186 | `XF86Launch7` | contrast +5 |
@@ -153,6 +153,41 @@ steps succeeded.
 with `xrandr`, forcing link retraining for a panel that stays asleep even once
 the signal returns. It retries the restore three times per output and reports a
 failure rather than leaving an output off silently.
+
+### The wake key does not go through the desktop
+
+GNOME does not dispatch custom keybindings to the lock screen, so a hotkey
+bound through `install-keys` cannot fire in the one state the wake key exists
+for. The evidence was `~/.cache/g13/ddc-key.log`: over two weeks it recorded
+659 `input`, 477 `brightness` and 43 `contrast` actions, and exactly zero
+`wake` presses — while the action itself succeeded every time it was invoked by
+hand.
+
+`g13-wake-listener` therefore reads the driver's own virtual keyboard
+(`/dev/input/event*`, the node whose name is `G13`) and runs the action itself.
+evdev delivery is not affected by the lock screen, the screensaver or DPMS
+blanking, so the key works in every state.
+
+- The node is resolved by device **name**, not number, and re-resolved whenever
+  it disappears: the driver recreates its uinput device on restart and replug,
+  and the event number moves when it does.
+- Reading it needs the `uaccess` rule in `72-g13.rules`; without it the listener
+  idles and says so rather than failing silently.
+- It runs as `g13-wake-listener.service`, wanted by `graphical-session.target`
+  rather than `default.target`, because `wake` needs `DISPLAY` and
+  `XAUTHORITY` — which only exist once the session has imported its
+  environment. A service started at login before that import has no `DISPLAY`,
+  and the X half of the wake would be skipped silently.
+- The hotkey and the listener both remain bound, so when the session is
+  unlocked a press reaches the action twice. `g13-ddc key wake*` takes
+  `ddc-key.lock` (separate from the page-render lock, which is held on a timer)
+  and the second caller prints `wake already running` and exits. Without that,
+  `wake-hard` would cycle the outputs twice.
+
+Both paths now run `wake-hard` rather than `wake`. A panel that needs a
+physical power cycle has lost the link, and DDC/CI rides that same link, so
+`VCP D6 = 01` cannot be delivered; only the `xrandr` off/on retrain gets it
+back.
 
 ### Switching inputs
 
