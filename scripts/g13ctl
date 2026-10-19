@@ -373,7 +373,21 @@ cmd_udev_install() {
     if sudo -u "$target_user" test -w "$node" 2>/dev/null; then
       info ""
       info "$node is now writable by $target_user."
-      info "Start the driver with:  g13ctl start"
+      # Only advise starting the driver when it is not already up. Reading the
+      # target user's manager from root needs their runtime dir; when that
+      # cannot be determined, say nothing rather than give wrong advice.
+      local uid runtime state=""
+      uid="$(id -u "$target_user" 2>/dev/null || true)"
+      if [[ -n "$uid" && -d "/run/user/$uid" ]]; then
+        runtime="/run/user/$uid"
+        state="$(sudo -u "$target_user" XDG_RUNTIME_DIR="$runtime" \
+                 systemctl --user is-active "$UNIT" 2>/dev/null || true)"
+      fi
+      case "$state" in
+        active) info "The driver is already running." ;;
+        "")     : ;;
+        *)      info "Start the driver with:  g13ctl start" ;;
+      esac
     else
       info ""
       warn "$node is still not writable by $target_user."
